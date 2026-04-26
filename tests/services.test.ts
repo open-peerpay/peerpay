@@ -171,7 +171,7 @@ test("generates deterministic webhook signatures", () => {
 
 test("generates a hidden admin path and authenticates after setup", async () => {
   const path = getAdminPath(ctx);
-  expect(path.startsWith("/admin-")).toBe(true);
+  expect(path).toMatch(/^\/[a-f0-9]{7}$/);
   expect(getAdminPath(ctx)).toBe(path);
   expect(isSetupRequired(ctx)).toBe(true);
 
@@ -186,4 +186,13 @@ test("generates a hidden admin path and authenticates after setup", async () => 
   expect(state.adminPath).toBe(path);
 
   await expect(loginAdmin(ctx, "wrong-password")).rejects.toThrow("管理密码错误");
+});
+
+test("replaces legacy generated admin-prefixed paths", () => {
+  ctx.db.query("INSERT INTO app_settings(key, value, updated_at) VALUES (?, ?, ?)")
+    .run("admin_path", "/admin-aaaaaaaaaaaaaaaaaa", new Date().toISOString());
+
+  const path = getAdminPath(ctx);
+  expect(path).toMatch(/^\/[a-f0-9]{7}$/);
+  expect(path).not.toContain("admin-");
 });

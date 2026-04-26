@@ -30,10 +30,16 @@ export function getAdminPath(ctx: AppContext) {
 
   const existing = getSetting(ctx, ADMIN_PATH_KEY);
   if (existing) {
-    return normalizeAdminPath(existing);
+    const normalized = normalizeAdminPath(existing);
+    if (/^\/admin-[a-f0-9]{18}$/.test(normalized)) {
+      const generated = createAdminPath();
+      setSetting(ctx, ADMIN_PATH_KEY, generated);
+      return generated;
+    }
+    return normalized;
   }
 
-  const generated = `/admin-${randomBytes(9).toString("hex")}`;
+  const generated = createAdminPath();
   setSetting(ctx, ADMIN_PATH_KEY, generated);
   return generated;
 }
@@ -123,10 +129,14 @@ function validatePassword(password: string) {
   }
 }
 
+function createAdminPath() {
+  return `/${randomBytes(4).toString("hex").slice(0, 7)}`;
+}
+
 function normalizeAdminPath(value: string) {
   const path = value.startsWith("/") ? value : `/${value}`;
-  if (!/^\/[a-zA-Z0-9_-]{8,80}$/.test(path)) {
-    throw apiError(400, "ADMIN_PATH 只能包含 8-80 位字母、数字、下划线或短横线");
+  if (!/^\/[a-zA-Z0-9_-]{7,80}$/.test(path)) {
+    throw apiError(400, "ADMIN_PATH 只能包含 7-80 位字母、数字、下划线或短横线");
   }
   return path;
 }

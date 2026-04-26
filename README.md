@@ -14,13 +14,13 @@ bun run dev
 管理台入口默认会在首次启动时随机生成，并打印在终端：
 
 ```text
-PeerPay admin path: http://localhost:3000/admin-xxxxxxxxxxxxxxxxxx
+PeerPay admin path: http://localhost:3000/a1b2c3d
 ```
 
 也可以部署前用环境变量固定：
 
 ```bash
-ADMIN_PATH=/admin-peerpay bun run dev
+ADMIN_PATH=/peerpay1 bun run dev
 ```
 
 设备配对二维码默认按当前请求地址生成。反向代理或内网部署时，如果 APK 需要访问另一个公网地址，可以显式配置：

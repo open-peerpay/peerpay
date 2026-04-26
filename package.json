@@ -1,0 +1,27 @@
+{
+  "name": "peerpay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch run server/index.ts",
+    "start": "bun run server/index.ts",
+    "build": "bun build --target=bun --production --root . --outdir=dist ./server/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "antd:lint": "antd lint src/client --format json"
+  },
+  "dependencies": {
+    "@ant-design/icons": "latest",
+    "antd": "latest",
+    "react": "latest",
+    "react-dom": "latest"
+  },
+  "devDependencies": {
+    "@ant-design/cli": "latest",
+    "@types/bun": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "typescript": "latest"
+  }
+}

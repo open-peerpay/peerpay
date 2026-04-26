@@ -1,0 +1,8 @@
+.DS_Store
+node_modules
+dist
+data/*.sqlite
+data/*.sqlite-*
+.env
+.env.*
+!.env.example

@@ -1,0 +1,8 @@
+[install]
+saveTextLockfile = true
+
+[serve]
+port = 3000
+
+[serve.static]
+env = "PUBLIC_*"

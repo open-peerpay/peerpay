@@ -1,9 +1,11 @@
 import {
   createAccount,
+  createDeviceEnrollment,
   createOrder,
   dashboardStats,
   deletePresetQrCode,
   dispatchCallback,
+  enrollAndroidDevice,
   getOrder,
   handleAndroidNotification,
   listAccounts,
@@ -20,6 +22,7 @@ import {
   updateOrderStatus,
   updateAccountSettings,
   upsertPresetQrCodes,
+  verifyAndroidRequest,
   type AppContext
 } from "./services";
 import {
@@ -29,11 +32,13 @@ import {
   requireAdmin,
   setupAdminPassword
 } from "./auth";
-import { boolFromBody, corsHeaders, json, pageOptions, readJson, withErrors } from "./http";
+import { boolFromBody, corsHeaders, json, pageOptions, parseJsonText, readJson, withErrors } from "./http";
 import type {
   AndroidNotificationInput,
   BulkPresetQrCodeInput,
+  CreateDeviceEnrollmentInput,
   CreateOrderInput,
+  EnrollDeviceInput,
   HeartbeatInput,
   OrderStatus
 } from "../src/shared/types";
@@ -45,6 +50,13 @@ type RouteRequest<T extends Record<string, string> = Record<string, string>> = R
 function admin<T extends Request>(ctx: AppContext, req: T, handler: () => Response | Promise<Response>) {
   requireAdmin(ctx, req);
   return handler();
+}
+
+function pairingUrl(req: Request, token: string) {
+  const baseUrl = Bun.env.PEERPAY_PUBLIC_URL?.trim();
+  const url = new URL("/api/android/enroll", baseUrl || req.url);
+  url.searchParams.set("token", token);
+  return url.toString();
 }
 
 export function createApiRoutes(ctx: AppContext) {
@@ -151,15 +163,37 @@ export function createApiRoutes(ctx: AppContext) {
     },
     "/api/android/notifications": {
       POST: (req: Request) => withErrors(async () => {
-        const result = handleAndroidNotification(ctx, await readJson<AndroidNotificationInput>(req));
+        const bodyText = await req.text();
+        const device = verifyAndroidRequest(ctx, req, bodyText);
+        const result = handleAndroidNotification(ctx, parseJsonText<AndroidNotificationInput>(bodyText), device);
         return json(result, { status: result.matched ? 200 : 202 });
       })
     },
+    "/api/android/enroll": {
+      POST: (req: Request) => withErrors(async () => {
+        const url = new URL(req.url);
+        const body = await readJson<EnrollDeviceInput>(req);
+        return json(enrollAndroidDevice(ctx, {
+          ...body,
+          enrollmentToken: body.enrollmentToken || url.searchParams.get("token") || ""
+        }));
+      })
+    },
     "/api/android/heartbeat": {
-      POST: (req: Request) => withErrors(async () => json(touchDevice(ctx, await readJson<HeartbeatInput>(req))))
+      POST: (req: Request) => withErrors(async () => {
+        const bodyText = await req.text();
+        const device = verifyAndroidRequest(ctx, req, bodyText);
+        return json(touchDevice(ctx, parseJsonText<HeartbeatInput>(bodyText), device));
+      })
     },
     "/api/devices": {
       GET: (req: Request) => withErrors(() => admin(ctx, req, () => json(listDevices(ctx))))
+    },
+    "/api/device-enrollments": {
+      POST: (req: Request) => withErrors(async () => admin(ctx, req, async () => {
+        const enrollment = createDeviceEnrollment(ctx, await readJson<CreateDeviceEnrollmentInput>(req));
+        return json({ ...enrollment, pairingUrl: pairingUrl(req, enrollment.token) }, { status: 201 });
+      }))
     },
     "/api/devices/:id/enabled": {
       POST: (req: RouteRequest<{ id: string }>) => withErrors(async () => {

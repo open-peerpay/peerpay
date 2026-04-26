@@ -2,15 +2,20 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
   closeAppContext,
   createAppContext,
+  createDeviceEnrollment,
   createOrder,
+  enrollAndroidDevice,
   handleAndroidNotification,
   listAmountOccupations,
   listNotificationLogs,
+  signAndroidRequest,
   signPayload,
   updateAccountSettings,
   upsertPresetQrCodes,
+  verifyAndroidRequest,
   type AppContext
 } from "../server/services";
+import type { Device, EnrollDeviceResult } from "../src/shared/types";
 import { getAdminPath, getAdminSessionState, isSetupRequired, loginAdmin, setupAdminPassword } from "../server/auth";
 
 let ctx: AppContext;
@@ -26,6 +31,20 @@ beforeEach(() => {
 afterEach(() => {
   closeAppContext(ctx);
 });
+
+function enrollTestDevice(deviceId = "android-main"): EnrollDeviceResult {
+  const enrollment = createDeviceEnrollment(ctx, {
+    accountCode: "default",
+    name: "主收款机",
+    ttlMinutes: 10
+  });
+
+  return enrollAndroidDevice(ctx, {
+    enrollmentToken: enrollment.token,
+    deviceId,
+    appVersion: "0.1.0"
+  });
+}
 
 test("creates orders by dynamically assigning offset amounts", () => {
   upsertPresetQrCodes(ctx, {
@@ -60,6 +79,7 @@ test("creates orders by dynamically assigning offset amounts", () => {
 });
 
 test("matches an android payment notification and clears the occupation", () => {
+  const { device } = enrollTestDevice();
   const order = createOrder(ctx, {
     accountCode: "default",
     amount: "10.00",
@@ -67,12 +87,10 @@ test("matches an android payment notification and clears the occupation", () => 
   });
 
   const result = handleAndroidNotification(ctx, {
-    accountCode: "default",
-    deviceId: "android-main",
     channel: "alipay",
     actualAmount: order.actualAmount,
     rawText: `支付宝到账 ${order.actualAmount} 元`
-  });
+  }, device);
 
   expect(result.matched).toBe(true);
   expect(result.order?.id).toBe(order.id);
@@ -81,15 +99,64 @@ test("matches an android payment notification and clears the occupation", () => 
 });
 
 test("records parse failures for unstructured notifications", () => {
+  const { device } = enrollTestDevice();
   const result = handleAndroidNotification(ctx, {
-    accountCode: "default",
-    deviceId: "android-main",
     rawText: "你有一条新的收款消息"
-  });
+  }, device);
 
   expect(result.matched).toBe(false);
   expect(result.log.status).toBe("parse_failed");
   expect(listNotificationLogs(ctx, { status: "parse_failed" }).total).toBe(1);
+});
+
+test("consumes device enrollment tokens once", () => {
+  const enrollment = createDeviceEnrollment(ctx, {
+    accountCode: "default",
+    name: "备用收款机",
+    ttlMinutes: 10
+  });
+
+  const first = enrollAndroidDevice(ctx, {
+    enrollmentToken: enrollment.token,
+    deviceId: "android-once"
+  });
+
+  expect(first.device.deviceId).toBe("android-once");
+  expect(() => enrollAndroidDevice(ctx, {
+    enrollmentToken: enrollment.token,
+    deviceId: "android-replay"
+  })).toThrow("配对码");
+});
+
+test("verifies signed android requests and rejects replayed nonce", () => {
+  const { device, deviceSecret } = enrollTestDevice();
+  const bodyText = JSON.stringify({ appVersion: "0.1.0" });
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const nonce = "nonce-1";
+  const signature = signAndroidRequest({
+    method: "POST",
+    path: "/api/android/heartbeat",
+    timestamp,
+    nonce,
+    bodyText,
+    deviceSecret
+  });
+  const request = new Request("http://peerpay.test/api/android/heartbeat", {
+    method: "POST",
+    headers: {
+      "x-peerpay-device-id": device.deviceId,
+      "x-peerpay-timestamp": timestamp,
+      "x-peerpay-nonce": nonce,
+      "x-peerpay-signature": signature
+    },
+    body: bodyText
+  });
+
+  const verified = verifyAndroidRequest(ctx, request, bodyText) as Device;
+  expect(verified.deviceId).toBe(device.deviceId);
+  expect(verified.online).toBe(true);
+  expect(verified.lastSeenAt).toBeTruthy();
+  expect(() => verifyAndroidRequest(ctx, request, bodyText)).toThrow("nonce");
 });
 
 test("generates deterministic webhook signatures", () => {

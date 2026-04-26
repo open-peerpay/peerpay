@@ -23,12 +23,18 @@ PeerPay admin path: http://localhost:3000/admin-xxxxxxxxxxxxxxxxxx
 ADMIN_PATH=/admin-peerpay bun run dev
 ```
 
+设备配对二维码默认按当前请求地址生成。反向代理或内网部署时，如果 APK 需要访问另一个公网地址，可以显式配置：
+
+```bash
+PEERPAY_PUBLIC_URL=https://pay.example.com bun run dev
+```
+
 首次打开管理台会进入初始化界面，用于设置管理密码。初始化后，管理台和管理 API 需要登录会话。
 
 ## 核心流程
 
 ```text
-创建订单 -> 分配唯一实付金额 -> 返回付款 URL -> 用户扫码支付 -> 安卓上报到账 -> 匹配 pending 订单 -> 发送回调
+后台生成设备配对码 -> 通用 APK 扫码加入系统 -> 售货系统创建订单 -> 分配唯一实付金额 -> 返回付款 URL -> 用户扫码支付 -> 安卓签名上报到账 -> 匹配 pending 订单 -> 发送回调
 ```
 
 启动时会自动创建 `default` 账户。账户通过 `maxOffsetCents` 控制金额偏移范围，例如订单金额 `10.00`、最大偏移 `99` 分时，会尝试分配 `10.00` 到 `10.99` 中未被 pending 订单占用的金额。
@@ -37,7 +43,7 @@ ADMIN_PATH=/admin-peerpay bun run dev
 
 ## 常用接口
 
-创建订单：
+创建订单由售货系统调用，不在后台管理台手动创建：
 
 ```bash
 curl -X POST http://localhost:3000/api/orders \
@@ -65,12 +71,32 @@ curl -X POST http://localhost:3000/api/preset-qrcodes \
   -d '{"accountCode":"default","items":[{"amount":"10.00","payUrl":"https://pay.example/10.00"},{"amount":"10.01","payUrl":"https://pay.example/10.01"}]}'
 ```
 
-安卓到账上报：
+生成设备配对码需要后台登录。返回的 `pairingUrl` 是一个带当前服务器地址的一次性 URL，管理台会把它渲染成二维码，通用 APK 扫码即可知道要连接哪台私有化服务器：
+
+```bash
+curl -X POST http://localhost:3000/api/device-enrollments \
+  -H 'content-type: application/json' \
+  -d '{"accountCode":"default","name":"主收款机","ttlMinutes":30}'
+```
+
+APK 扫码后向 `pairingUrl` 发起注册，服务端只返回一次 `deviceSecret`。APK 需要本地保存该密钥，后续心跳和到账上报都用它签名：
+
+```bash
+curl -X POST 'http://localhost:3000/api/android/enroll?token=PAIRING_TOKEN' \
+  -H 'content-type: application/json' \
+  -d '{"deviceId":"android-main","name":"主收款机","appVersion":"0.1.0"}'
+```
+
+安卓到账上报需要携带设备签名头：
 
 ```bash
 curl -X POST http://localhost:3000/api/android/notifications \
   -H 'content-type: application/json' \
-  -d '{"accountCode":"default","deviceId":"android-main","channel":"alipay","actualAmount":"10.00","rawText":"支付宝到账 10.00 元"}'
+  -H 'x-peerpay-device-id: android-main' \
+  -H 'x-peerpay-timestamp: TIMESTAMP' \
+  -H 'x-peerpay-nonce: NONCE' \
+  -H 'x-peerpay-signature: SIGNATURE' \
+  -d '{"channel":"alipay","actualAmount":"10.00","rawText":"支付宝到账 10.00 元"}'
 ```
 
 安卓心跳：
@@ -78,8 +104,24 @@ curl -X POST http://localhost:3000/api/android/notifications \
 ```bash
 curl -X POST http://localhost:3000/api/android/heartbeat \
   -H 'content-type: application/json' \
-  -d '{"accountCode":"default","deviceId":"android-main","name":"主收款机","appVersion":"0.1.0"}'
+  -H 'x-peerpay-device-id: android-main' \
+  -H 'x-peerpay-timestamp: TIMESTAMP' \
+  -H 'x-peerpay-nonce: NONCE' \
+  -H 'x-peerpay-signature: SIGNATURE' \
+  -d '{"name":"主收款机","appVersion":"0.1.0"}'
 ```
+
+安卓请求签名算法为 HMAC-SHA256 hex。待签名内容按以下 5 行拼接，密钥为配对接口返回的 `deviceSecret`：
+
+```text
+HTTP_METHOD
+URL_PATH
+TIMESTAMP
+NONCE
+SHA256_BODY_HEX
+```
+
+其中 `URL_PATH` 示例为 `/api/android/notifications`，`TIMESTAMP` 为秒级时间戳，`NONCE` 在 5 分钟窗口内不能重复。
 
 ## 脚本
 

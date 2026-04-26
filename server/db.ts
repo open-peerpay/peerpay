@@ -74,7 +74,9 @@ function migrate(db: Database) {
       device_id TEXT NOT NULL UNIQUE,
       name TEXT,
       account_id INTEGER REFERENCES accounts(id),
+      device_secret TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
+      paired_at TEXT,
       last_seen_at TEXT,
       app_version TEXT,
       metadata TEXT,
@@ -84,6 +86,27 @@ function migrate(db: Database) {
 
     CREATE INDEX IF NOT EXISTS idx_devices_last_seen
       ON devices(last_seen_at DESC);
+
+    CREATE TABLE IF NOT EXISTS device_enrollments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id INTEGER NOT NULL REFERENCES accounts(id),
+      name TEXT,
+      token_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_device_enrollments_expires
+      ON device_enrollments(expires_at, used_at);
+
+    CREATE TABLE IF NOT EXISTS device_nonces (
+      device_id TEXT NOT NULL,
+      nonce TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (device_id, nonce)
+    );
 
     CREATE TABLE IF NOT EXISTS payment_notifications (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,6 +165,8 @@ function migrate(db: Database) {
   ensureColumn(db, "orders", "pay_url", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "orders", "pay_mode", "TEXT NOT NULL DEFAULT 'fallback'");
   ensureColumn(db, "orders", "amount_input_required", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn(db, "devices", "device_secret", "TEXT");
+  ensureColumn(db, "devices", "paired_at", "TEXT");
 }
 
 function seed(db: Database) {

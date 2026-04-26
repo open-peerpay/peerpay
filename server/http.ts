@@ -3,7 +3,7 @@ import { apiError } from "./services";
 export const corsHeaders = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET,POST,PATCH,DELETE,OPTIONS",
-  "access-control-allow-headers": "content-type, authorization"
+  "access-control-allow-headers": "content-type, authorization, x-peerpay-device-id, x-peerpay-timestamp, x-peerpay-nonce, x-peerpay-signature"
 };
 
 export function json<T>(data: T, init: ResponseInit = {}) {
@@ -37,6 +37,10 @@ export async function withErrors(handler: () => Response | Promise<Response>) {
 
 export async function readJson<T>(req: Request): Promise<T> {
   const text = await req.text();
+  return parseJsonText<T>(text);
+}
+
+export function parseJsonText<T>(text: string): T {
   if (!text.trim()) {
     return {} as T;
   }

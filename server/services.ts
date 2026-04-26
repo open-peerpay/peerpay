@@ -1,5 +1,5 @@
 import type { Database, SQLQueryBindings } from "bun:sqlite";
-import { createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createDatabase } from "./db";
 import { extractMoneyFromText, formatMoney, parseMoney } from "./money";
 import type {
@@ -9,9 +9,13 @@ import type {
   BulkPresetQrCodeInput,
   CallbackLog,
   CallbackStatus,
+  CreateDeviceEnrollmentInput,
   CreateOrderInput,
   DashboardStats,
   Device,
+  DeviceEnrollment,
+  EnrollDeviceInput,
+  EnrollDeviceResult,
   HeartbeatInput,
   LogLevel,
   MatchStatus,
@@ -76,12 +80,25 @@ interface DeviceRow {
   name: string | null;
   account_id: number | null;
   account_code: string | null;
+  device_secret: string | null;
   enabled: RowBool;
+  paired_at: string | null;
   last_seen_at: string | null;
   app_version: string | null;
   metadata: string | null;
   created_at: string;
   updated_at: string;
+}
+
+interface DeviceEnrollmentRow {
+  id: number;
+  account_id: number;
+  account_code: string;
+  name: string | null;
+  token_hash: string;
+  expires_at: string;
+  used_at: string | null;
+  created_at: string;
 }
 
 interface NotificationRow {
@@ -158,6 +175,14 @@ function createOrderId() {
   return `ord_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
 }
 
+function createSecret(bytes = 32) {
+  return randomBytes(bytes).toString("base64url");
+}
+
+function sha256(value: string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function scalar(ctx: AppContext, sql: string, ...params: SQLQueryBindings[]) {
   const row = ctx.db.query(sql).get(...params) as { value: number } | null;
   return row?.value ?? 0;
@@ -225,11 +250,25 @@ function mapDevice(row: DeviceRow): Device {
     accountCode: row.account_code,
     enabled: row.enabled === 1,
     online: row.enabled === 1 && lastSeen >= threshold,
+    pairedAt: row.paired_at,
     lastSeenAt: row.last_seen_at,
     appVersion: row.app_version,
     metadata: parseJson(row.metadata),
     createdAt: row.created_at,
     updatedAt: row.updated_at
+  };
+}
+
+function mapDeviceEnrollment(row: DeviceEnrollmentRow, token: string): DeviceEnrollment {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    accountCode: row.account_code,
+    name: row.name,
+    token,
+    pairingUrl: "",
+    expiresAt: row.expires_at,
+    createdAt: row.created_at
   };
 }
 
@@ -757,44 +796,142 @@ export function updateOrderStatus(ctx: AppContext, id: string, status: OrderStat
   return updated;
 }
 
-export function touchDevice(ctx: AppContext, input: HeartbeatInput) {
-  const account = resolveAccount(ctx, input, false);
+export function createDeviceEnrollment(ctx: AppContext, input: CreateDeviceEnrollmentInput): DeviceEnrollment {
+  const account = resolveAccount(ctx, input, true);
+  const ttlMinutes = Math.min(Math.max(input.ttlMinutes ?? 30, 1), 1440);
+  const now = nowIso();
+  const token = createSecret(18);
+  const expiresAt = addMinutes(ttlMinutes);
+
+  ctx.db.query(`
+    INSERT INTO device_enrollments(account_id, name, token_hash, expires_at, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(account.id, input.name?.trim() || null, sha256(token), expiresAt, now);
+
+  const id = (ctx.db.query("SELECT last_insert_rowid() AS id").get() as { id: number }).id;
+  const row = ctx.db.query(`
+    SELECT e.*, a.code AS account_code
+    FROM device_enrollments e
+    JOIN accounts a ON a.id = e.account_id
+    WHERE e.id = ?
+  `).get(id) as DeviceEnrollmentRow | null;
+
+  if (!row) {
+    throw apiError(500, "设备配对码创建失败");
+  }
+
+  logSystem(ctx, "info", "devices.enrollment_created", "设备配对码已创建", {
+    enrollmentId: id,
+    accountId: account.id,
+    expiresAt
+  });
+  return mapDeviceEnrollment(row, token);
+}
+
+export function enrollAndroidDevice(ctx: AppContext, input: EnrollDeviceInput): EnrollDeviceResult {
+  const token = input.enrollmentToken?.trim();
+  const deviceId = input.deviceId?.trim();
+  if (!token || !deviceId) {
+    throw apiError(400, "配对码和设备 ID 不能为空");
+  }
+
+  const now = nowIso();
+  const row = ctx.db.query(`
+    SELECT e.*, a.code AS account_code
+    FROM device_enrollments e
+    JOIN accounts a ON a.id = e.account_id
+    WHERE e.token_hash = ? AND e.used_at IS NULL AND e.expires_at > ?
+  `).get(sha256(token), now) as DeviceEnrollmentRow | null;
+
+  if (!row) {
+    throw apiError(401, "设备配对码无效或已过期");
+  }
+
+  const deviceSecret = createSecret();
+  const metadata = input.metadata == null ? null : JSON.stringify(input.metadata);
+  const name = input.name?.trim() || row.name;
+  const transaction = ctx.db.transaction(() => {
+    const consumed = ctx.db.query("UPDATE device_enrollments SET used_at = ? WHERE id = ? AND used_at IS NULL").run(now, row.id);
+    if (consumed.changes !== 1) {
+      throw apiError(401, "设备配对码已被使用");
+    }
+
+    ctx.db.query(`
+      INSERT INTO devices(device_id, name, account_id, device_secret, enabled, paired_at, last_seen_at, app_version, metadata, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(device_id) DO UPDATE SET
+        name = COALESCE(excluded.name, devices.name),
+        account_id = excluded.account_id,
+        device_secret = excluded.device_secret,
+        enabled = 1,
+        paired_at = excluded.paired_at,
+        last_seen_at = excluded.last_seen_at,
+        app_version = COALESCE(excluded.app_version, devices.app_version),
+        metadata = COALESCE(excluded.metadata, devices.metadata),
+        updated_at = excluded.updated_at
+    `).run(
+      deviceId,
+      name,
+      row.account_id,
+      deviceSecret,
+      now,
+      now,
+      input.appVersion?.trim() || null,
+      metadata,
+      now,
+      now
+    );
+  });
+  transaction();
+
+  const device = getDeviceByDeviceId(ctx, deviceId);
+  if (!device) {
+    throw apiError(500, "设备配对失败");
+  }
+
+  logSystem(ctx, "info", "devices.enrolled", "安卓设备已加入系统", {
+    deviceId,
+    accountId: row.account_id
+  });
+  return { device: mapDevice(device), deviceSecret };
+}
+
+export function touchDevice(ctx: AppContext, input: HeartbeatInput, verifiedDevice: Device) {
   const now = nowIso();
   const metadata = input.metadata == null ? null : JSON.stringify(input.metadata);
 
   ctx.db.query(`
-    INSERT INTO devices(device_id, name, account_id, last_seen_at, app_version, metadata, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(device_id) DO UPDATE SET
-      name = COALESCE(excluded.name, devices.name),
-      account_id = excluded.account_id,
-      last_seen_at = excluded.last_seen_at,
-      app_version = COALESCE(excluded.app_version, devices.app_version),
-      metadata = COALESCE(excluded.metadata, devices.metadata),
-      updated_at = excluded.updated_at
+    UPDATE devices
+    SET name = COALESCE(?, name),
+        last_seen_at = ?,
+        app_version = COALESCE(?, app_version),
+        metadata = COALESCE(?, metadata),
+        updated_at = ?
+    WHERE device_id = ?
   `).run(
-    input.deviceId.trim(),
     input.name?.trim() || null,
-    account.id,
     now,
     input.appVersion?.trim() || null,
     metadata,
     now,
-    now
+    verifiedDevice.deviceId
   );
 
-  const device = ctx.db.query(`
-    SELECT d.*, a.code AS account_code
-    FROM devices d
-    LEFT JOIN accounts a ON a.id = d.account_id
-    WHERE d.device_id = ?
-  `).get(input.deviceId.trim()) as DeviceRow | null;
-
+  const device = getDeviceByDeviceId(ctx, verifiedDevice.deviceId);
   if (!device) {
     throw apiError(500, "设备心跳更新失败");
   }
 
   return mapDevice(device);
+}
+
+function getDeviceByDeviceId(ctx: AppContext, deviceId: string) {
+  return ctx.db.query(`
+    SELECT d.*, a.code AS account_code
+    FROM devices d
+    LEFT JOIN accounts a ON a.id = d.account_id
+    WHERE d.device_id = ?
+  `).get(deviceId) as DeviceRow | null;
 }
 
 export function listDevices(ctx: AppContext) {
@@ -815,16 +952,101 @@ export function setDeviceEnabled(ctx: AppContext, id: number, enabled: boolean) 
   return listDevices(ctx).find((device) => device.id === id) ?? null;
 }
 
+export function verifyAndroidRequest(ctx: AppContext, req: Request, bodyText: string) {
+  const deviceId = req.headers.get("x-peerpay-device-id")?.trim();
+  const timestamp = req.headers.get("x-peerpay-timestamp")?.trim();
+  const nonce = req.headers.get("x-peerpay-nonce")?.trim();
+  const signature = req.headers.get("x-peerpay-signature")?.trim();
+  if (!deviceId || !timestamp || !nonce || !signature) {
+    throw apiError(401, "缺少设备签名头");
+  }
+
+  const timestampSeconds = Number(timestamp);
+  if (!Number.isFinite(timestampSeconds) || Math.abs(Date.now() / 1000 - timestampSeconds) > 300) {
+    throw apiError(401, "设备签名时间戳无效");
+  }
+
+  const row = getDeviceByDeviceId(ctx, deviceId);
+  if (!row || row.enabled !== 1 || !row.device_secret || !row.account_id) {
+    throw apiError(401, "设备不存在、未配对或已禁用");
+  }
+
+  const url = new URL(req.url);
+  const expected = signAndroidRequest({
+    method: req.method,
+    path: url.pathname,
+    timestamp,
+    nonce,
+    bodyText,
+    deviceSecret: row.device_secret
+  });
+
+  if (!safeEqual(signature, expected)) {
+    throw apiError(401, "设备签名无效");
+  }
+
+  rememberDeviceNonce(ctx, deviceId, nonce);
+  const now = nowIso();
+  ctx.db.query("UPDATE devices SET last_seen_at = ?, updated_at = ? WHERE device_id = ?").run(now, now, deviceId);
+  return mapDevice({ ...row, last_seen_at: now, updated_at: now });
+}
+
+export function signAndroidRequest(input: {
+  method: string;
+  path: string;
+  timestamp: string;
+  nonce: string;
+  bodyText: string;
+  deviceSecret: string;
+}) {
+  const canonical = [
+    input.method.toUpperCase(),
+    input.path,
+    input.timestamp,
+    input.nonce,
+    sha256(input.bodyText)
+  ].join("\n");
+  return createHmac("sha256", input.deviceSecret).update(canonical).digest("hex");
+}
+
+function rememberDeviceNonce(ctx: AppContext, deviceId: string, nonce: string) {
+  const now = nowIso();
+  const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+  ctx.db.query("DELETE FROM device_nonces WHERE expires_at <= ?").run(now);
+  try {
+    ctx.db.query("INSERT INTO device_nonces(device_id, nonce, expires_at, created_at) VALUES (?, ?, ?, ?)")
+      .run(deviceId, nonce, expiresAt, now);
+  } catch {
+    throw apiError(401, "设备签名 nonce 已使用");
+  }
+}
+
+function safeEqual(leftText: string, rightText: string) {
+  const left = Buffer.from(leftText);
+  const right = Buffer.from(rightText);
+  if (left.byteLength !== right.byteLength) {
+    return false;
+  }
+  return timingSafeEqual(left, right);
+}
+
 export interface NotificationMatchResult {
   matched: boolean;
   order: Order | null;
   log: NotificationLog;
 }
 
-export function handleAndroidNotification(ctx: AppContext, input: AndroidNotificationInput): NotificationMatchResult {
+export function handleAndroidNotification(
+  ctx: AppContext,
+  input: AndroidNotificationInput,
+  verifiedDevice: Device
+): NotificationMatchResult {
   releaseExpiredLocks(ctx);
-  const deviceId = input.deviceId?.trim();
-  const account = resolveAccount(ctx, { ...input, deviceId }, true);
+  const deviceId = verifiedDevice.deviceId;
+  if (!verifiedDevice.accountId) {
+    throw apiError(401, "设备未绑定账户");
+  }
+  const account = resolveAccount(ctx, { accountId: verifiedDevice.accountId }, true);
   const rawText = input.rawText?.trim() || input.text?.trim() || "";
   const amountCents = input.actualAmount != null
     ? parseMoney(input.actualAmount)
@@ -833,10 +1055,6 @@ export function handleAndroidNotification(ctx: AppContext, input: AndroidNotific
       : rawText
         ? extractMoneyFromText(rawText)
         : null;
-
-  if (deviceId) {
-    touchDevice(ctx, { deviceId, accountId: account.id });
-  }
 
   const now = nowIso();
   if (amountCents == null) {

@@ -3,8 +3,9 @@ import type {
   AmountOccupation,
   BulkPresetQrCodeInput,
   CallbackLog,
-  CreateOrderInput,
+  CreateDeviceEnrollmentInput,
   DashboardStats,
+  DeviceEnrollment,
   Device,
   NotificationLog,
   Order,
@@ -90,8 +91,8 @@ export function logoutAdmin() {
   return request<{ ok: boolean }>("/api/admin/logout", { method: "POST" });
 }
 
-export function createOrder(input: CreateOrderInput) {
-  return request<Order>("/api/orders", { method: "POST", body: JSON.stringify(input) });
+export function createDeviceEnrollment(input: CreateDeviceEnrollmentInput) {
+  return request<DeviceEnrollment>("/api/device-enrollments", { method: "POST", body: JSON.stringify(input) });
 }
 
 export function upsertQrCodes(input: BulkPresetQrCodeInput) {

@@ -9,6 +9,7 @@ import {
   Layout,
   Menu,
   Modal,
+  QRCode,
   Select,
   Space,
   Statistic,
@@ -29,9 +30,9 @@ import {
   CloudSyncOutlined,
   DatabaseOutlined,
   DeleteOutlined,
+  MobileOutlined,
   FileSearchOutlined,
   LockOutlined,
-  PlusOutlined,
   ReloadOutlined,
   SendOutlined,
   SettingOutlined,
@@ -42,6 +43,7 @@ import type {
   AmountOccupation,
   CallbackLog,
   Device,
+  DeviceEnrollment,
   NotificationLog,
   Order,
   OrderStatus,
@@ -50,7 +52,7 @@ import type {
 } from "../shared/types";
 import {
   createAccount,
-  createOrder,
+  createDeviceEnrollment,
   deleteQrCode,
   getAdminSession,
   loadSnapshot,
@@ -259,59 +261,6 @@ interface ModalProps {
   onRefresh: () => void;
 }
 
-function CreateOrderModal({ accounts, open, onCancel, onRefresh }: ModalProps) {
-  const [form] = Form.useForm();
-  const { message } = AntApp.useApp();
-  const [saving, setSaving] = useState(false);
-  const accountOptions = useMemo(() => accounts.map((account) => ({
-    label: `${account.name} (${account.code})`,
-    value: account.code
-  })), [accounts]);
-
-  const handleFinish = useCallback(async (values: Record<string, unknown>) => {
-    setSaving(true);
-    try {
-      await createOrder(values as never);
-      message.success("订单已创建");
-      form.resetFields();
-      onCancel();
-      onRefresh();
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "订单创建失败");
-    } finally {
-      setSaving(false);
-    }
-  }, [form, message, onCancel, onRefresh]);
-
-  return (
-    <Modal title="创建订单" open={open} confirmLoading={saving} destroyOnHidden okText="创建" cancelText="取消" onOk={form.submit} onCancel={onCancel}>
-      <Form form={form} layout="vertical" initialValues={{ ttlMinutes: 15 }} onFinish={handleFinish}>
-        <Form.Item name="accountCode" label="账户" rules={[{ required: true, message: "请选择账户" }]}>
-          <Select options={accountOptions} placeholder="选择账户" />
-        </Form.Item>
-        <Form.Item name="amount" label="订单金额" rules={[{ required: true, message: "请输入订单金额" }]}>
-          <InputNumber min={0.01} precision={2} step={0.01} prefix="¥" className="full-width" />
-        </Form.Item>
-        <Form.Item name="merchantOrderId" label="商户订单号">
-          <Input allowClear />
-        </Form.Item>
-        <Form.Item name="subject" label="标题">
-          <Input allowClear />
-        </Form.Item>
-        <Form.Item name="callbackUrl" label="回调地址">
-          <Input allowClear />
-        </Form.Item>
-        <Form.Item name="callbackSecret" label="回调密钥">
-          <Input.Password />
-        </Form.Item>
-        <Form.Item name="ttlMinutes" label="有效分钟数" rules={[{ required: true, message: "请输入有效分钟数" }]}>
-          <InputNumber min={1} max={1440} precision={0} className="full-width" />
-        </Form.Item>
-      </Form>
-    </Modal>
-  );
-}
-
 function QrCodeModal({ accounts, open, onCancel, onRefresh }: ModalProps) {
   const [form] = Form.useForm();
   const { message } = AntApp.useApp();
@@ -352,6 +301,74 @@ function QrCodeModal({ accounts, open, onCancel, onRefresh }: ModalProps) {
           <TextArea rows={10} placeholder={"10.00 https://pay.example/10.00\n10.01 https://pay.example/10.01"} />
         </Form.Item>
       </Form>
+    </Modal>
+  );
+}
+
+function DeviceEnrollmentModal({ accounts, open, onCancel, onRefresh }: ModalProps) {
+  const [form] = Form.useForm();
+  const { message } = AntApp.useApp();
+  const [saving, setSaving] = useState(false);
+  const [enrollment, setEnrollment] = useState<DeviceEnrollment | null>(null);
+  const accountOptions = useMemo(() => accounts.map((account) => ({
+    label: `${account.name} (${account.code})`,
+    value: account.code
+  })), [accounts]);
+
+  useEffect(() => {
+    if (!open) {
+      setEnrollment(null);
+      form.resetFields();
+    }
+  }, [form, open]);
+
+  const handleFinish = useCallback(async (values: { accountCode: string; name?: string; ttlMinutes: number }) => {
+    setSaving(true);
+    try {
+      const result = await createDeviceEnrollment(values);
+      setEnrollment(result);
+      message.success("配对二维码已生成");
+      onRefresh();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "配对二维码生成失败");
+    } finally {
+      setSaving(false);
+    }
+  }, [message, onRefresh]);
+
+  return (
+    <Modal
+      title="设备配对"
+      open={open}
+      confirmLoading={saving}
+      destroyOnHidden
+      okText={enrollment ? "重新生成" : "生成"}
+      cancelText="关闭"
+      onOk={form.submit}
+      onCancel={onCancel}
+      width={680}
+    >
+      <Form form={form} layout="vertical" initialValues={{ ttlMinutes: 30 }} onFinish={handleFinish}>
+        <Form.Item name="accountCode" label="账户" rules={[{ required: true, message: "请选择账户" }]}>
+          <Select options={accountOptions} placeholder="选择账户" />
+        </Form.Item>
+        <Form.Item name="name" label="设备备注">
+          <Input allowClear />
+        </Form.Item>
+        <Form.Item name="ttlMinutes" label="有效分钟数" rules={[{ required: true, message: "请输入有效分钟数" }]}>
+          <InputNumber min={1} max={1440} precision={0} className="full-width" />
+        </Form.Item>
+      </Form>
+      {enrollment ? (
+        <div className="pairing-result">
+          <QRCode value={enrollment.pairingUrl} size={220} />
+          <div className="pairing-copy">
+            <Text strong>配对 URL</Text>
+            <Text copyable className="break-text">{enrollment.pairingUrl}</Text>
+            <Text type="secondary">通用 APK 扫描这个二维码后，会连接到当前私有服务器并完成配对。</Text>
+          </div>
+        </div>
+      ) : null}
     </Modal>
   );
 }
@@ -502,8 +519,8 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
   const [snapshot, setSnapshot] = useState<Snapshot>(emptySnapshot);
   const [loading, setLoading] = useState(true);
   const [isPending, startTransition] = useTransition();
-  const [orderOpen, setOrderOpen] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
+  const [deviceEnrollOpen, setDeviceEnrollOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [settingsAccount, setSettingsAccount] = useState<Account | null>(null);
 
@@ -655,10 +672,12 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
   ], [handleAccountToggle]);
 
   const deviceColumns = useMemo<Columns<Device>>(() => [
-    { title: "设备 ID", dataIndex: "deviceId", ellipsis: true },
+    { title: "设备 ID", dataIndex: "deviceId", width: 180, ellipsis: true },
+    { title: "备注", dataIndex: "name", width: 140, ellipsis: true, render: (value) => value || "-" },
     { title: "账户", dataIndex: "accountCode", width: 110, render: (value) => value || "-" },
     { title: "在线", dataIndex: "online", width: 90, render: (value) => value ? <Tag color="success">在线</Tag> : <Tag>离线</Tag> },
     { title: "版本", dataIndex: "appVersion", width: 110, render: (value) => value || "-" },
+    { title: "配对时间", dataIndex: "pairedAt", width: 190, render: formatDate },
     { title: "最后心跳", dataIndex: "lastSeenAt", width: 190, render: formatDate },
     { title: "启用", key: "enabled", width: 90, render: (_, record) => <Switch checked={record.enabled} onChange={(checked) => handleDeviceToggle(record.id, checked)} /> }
   ], [handleDeviceToggle]);
@@ -696,7 +715,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
 
   const toolbar = useMemo(() => (
     <Space wrap>
-      <Button type="primary" icon={<PlusOutlined />} onClick={() => setOrderOpen(true)}>订单</Button>
+      <Button type="primary" icon={<MobileOutlined />} onClick={() => setDeviceEnrollOpen(true)}>设备配对</Button>
       <Button icon={<DatabaseOutlined />} onClick={() => setQrOpen(true)}>二维码</Button>
       <Button icon={<ApiOutlined />} onClick={() => setAccountOpen(true)}>账户</Button>
       <Tooltip title="刷新">
@@ -724,7 +743,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
         <section className="panel">
           <Tabs items={[
             { key: "accounts", label: "账户", children: <Table<Account> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.accounts} columns={accountColumns} pagination={false} /> },
-            { key: "devices", label: "设备", children: <Table<Device> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.devices} columns={deviceColumns} scroll={{ x: 900 }} pagination={false} /> }
+            { key: "devices", label: "设备", children: <Table<Device> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.devices} columns={deviceColumns} scroll={{ x: 1100 }} pagination={false} /> }
           ]} />
         </section>
       );
@@ -791,8 +810,8 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
         </Header>
         <Content className="app-content">{content}</Content>
       </Layout>
-      <CreateOrderModal accounts={snapshot.accounts} open={orderOpen} onCancel={() => setOrderOpen(false)} onRefresh={refresh} />
       <QrCodeModal accounts={snapshot.accounts} open={qrOpen} onCancel={() => setQrOpen(false)} onRefresh={refresh} />
+      <DeviceEnrollmentModal accounts={snapshot.accounts} open={deviceEnrollOpen} onCancel={() => setDeviceEnrollOpen(false)} onRefresh={refresh} />
       <AccountModal open={accountOpen} onCancel={() => setAccountOpen(false)} onRefresh={refresh} />
       <AccountSettingsModal account={settingsAccount} open={Boolean(settingsAccount)} onCancel={() => setSettingsAccount(null)} onRefresh={refresh} />
     </Layout>

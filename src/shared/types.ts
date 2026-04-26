@@ -68,6 +68,7 @@ export interface Device {
   accountCode: string | null;
   enabled: boolean;
   online: boolean;
+  pairedAt: string | null;
   lastSeenAt: string | null;
   appVersion: string | null;
   metadata: unknown;
@@ -160,12 +161,40 @@ export interface AndroidNotificationInput {
 }
 
 export interface HeartbeatInput {
-  deviceId: string;
   name?: string;
-  accountId?: number;
-  accountCode?: string;
   appVersion?: string;
   metadata?: unknown;
+}
+
+export interface CreateDeviceEnrollmentInput {
+  accountId?: number;
+  accountCode?: string;
+  name?: string;
+  ttlMinutes?: number;
+}
+
+export interface DeviceEnrollment {
+  id: number;
+  accountId: number;
+  accountCode: string;
+  name: string | null;
+  token: string;
+  pairingUrl: string;
+  expiresAt: string;
+  createdAt: string;
+}
+
+export interface EnrollDeviceInput {
+  enrollmentToken: string;
+  deviceId: string;
+  name?: string;
+  appVersion?: string;
+  metadata?: unknown;
+}
+
+export interface EnrollDeviceResult {
+  device: Device;
+  deviceSecret: string;
 }
 
 export interface UpdateAccountSettingsInput {

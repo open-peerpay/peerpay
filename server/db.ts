@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { DEFAULT_MAX_OFFSET_CENTS } from "../src/shared/constants";
 
 export function createDatabase(databaseUrl = Bun.env.DATABASE_URL ?? "./data/peerpay.sqlite") {
   if (databaseUrl !== ":memory:") {
@@ -25,7 +26,7 @@ function migrate(db: Database) {
       code TEXT NOT NULL UNIQUE,
       name TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
-      max_offset_cents INTEGER NOT NULL DEFAULT 99,
+      max_offset_cents INTEGER NOT NULL DEFAULT ${DEFAULT_MAX_OFFSET_CENTS},
       fallback_pay_url TEXT,
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     );
@@ -160,7 +161,7 @@ function migrate(db: Database) {
     );
   `);
 
-  ensureColumn(db, "accounts", "max_offset_cents", "INTEGER NOT NULL DEFAULT 99");
+  ensureColumn(db, "accounts", "max_offset_cents", `INTEGER NOT NULL DEFAULT ${DEFAULT_MAX_OFFSET_CENTS}`);
   ensureColumn(db, "accounts", "fallback_pay_url", "TEXT");
   ensureColumn(db, "orders", "pay_url", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "orders", "pay_mode", "TEXT NOT NULL DEFAULT 'fallback'");
@@ -170,8 +171,8 @@ function migrate(db: Database) {
 }
 
 function seed(db: Database) {
-  db.query("INSERT OR IGNORE INTO accounts(code, name) VALUES (?, ?)")
-    .run("default", "默认账户");
+  db.query("INSERT OR IGNORE INTO accounts(code, name, max_offset_cents) VALUES (?, ?, ?)")
+    .run("default", "默认账户", DEFAULT_MAX_OFFSET_CENTS);
 }
 
 function ensureColumn(db: Database, table: string, column: string, definition: string) {

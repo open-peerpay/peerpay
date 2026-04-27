@@ -102,7 +102,7 @@ export function upsertQrCodes(input: BulkPresetQrCodeInput) {
   });
 }
 
-export function createAccount(input: { code: string; name: string }) {
+export function createAccount(input: { code: string; name: string; maxOffsetCents?: number; fallbackPayUrl?: string | null }) {
   return request<Account>("/api/accounts", { method: "POST", body: JSON.stringify(input) });
 }
 

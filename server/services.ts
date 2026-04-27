@@ -2,6 +2,7 @@ import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createDatabase } from "./db";
 import { extractMoneyFromText, formatMoney, parseMoney } from "./money";
+import { DEFAULT_MAX_OFFSET_CENTS } from "../src/shared/constants";
 import type {
   Account,
   AndroidNotificationInput,
@@ -461,7 +462,7 @@ export function createAccount(
 ) {
   const code = input.code.trim();
   const name = input.name.trim();
-  const maxOffsetCents = normalizeMaxOffset(input.maxOffsetCents ?? 99);
+  const maxOffsetCents = normalizeMaxOffset(input.maxOffsetCents ?? DEFAULT_MAX_OFFSET_CENTS);
   const fallbackPayUrl = normalizePayUrl(input.fallbackPayUrl ?? null, true);
   if (!/^[a-zA-Z0-9_-]{2,32}$/.test(code)) {
     throw apiError(400, "账户编码仅支持 2-32 位字母、数字、下划线或短横线");
@@ -624,6 +625,7 @@ function allocateActualAmount(
   maxOffsetCents: number,
   now: string
 ) {
+  const effectiveMaxOffsetCents = requestedAmount % 100 === 0 ? maxOffsetCents : 0;
   const rows = ctx.db.query(`
     SELECT actual_amount_cents AS amount
     FROM orders
@@ -631,17 +633,17 @@ function allocateActualAmount(
       AND status = 'pending'
       AND expire_at > ?
       AND actual_amount_cents BETWEEN ? AND ?
-  `).all(accountId, now, requestedAmount, requestedAmount + maxOffsetCents) as Array<{ amount: number }>;
+  `).all(accountId, now, requestedAmount, requestedAmount + effectiveMaxOffsetCents) as Array<{ amount: number }>;
   const occupied = new Set(rows.map((row) => row.amount));
 
-  for (let offset = 0; offset <= maxOffsetCents; offset += 1) {
+  for (let offset = 0; offset <= effectiveMaxOffsetCents; offset += 1) {
     const candidate = requestedAmount + offset;
     if (!occupied.has(candidate)) {
       return candidate;
     }
   }
 
-  throw apiError(409, `订单金额 ${formatMoney(requestedAmount)} 在最大偏移 ${formatMoney(maxOffsetCents)} 内已被占满`);
+  throw apiError(409, `订单金额 ${formatMoney(requestedAmount)} 在最大偏移 ${formatMoney(effectiveMaxOffsetCents)} 内已被占满`);
 }
 
 function findPresetQrCode(ctx: AppContext, accountId: number, amountCents: number) {

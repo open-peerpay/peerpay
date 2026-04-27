@@ -50,6 +50,7 @@ import type {
   PresetQrCode,
   SystemLog
 } from "../shared/types";
+import { DEFAULT_MAX_OFFSET_CENTS } from "../shared/constants";
 import {
   createAccount,
   createDeviceEnrollment,
@@ -378,10 +379,10 @@ function AccountModal({ open, onCancel, onRefresh }: Omit<ModalProps, "accounts"
   const { message } = AntApp.useApp();
   const [saving, setSaving] = useState(false);
 
-  const handleFinish = useCallback(async (values: Record<string, unknown>) => {
+  const handleFinish = useCallback(async (values: { code: string; name: string; maxOffsetCents: number; fallbackPayUrl?: string }) => {
     setSaving(true);
     try {
-      await createAccount(values as never);
+      await createAccount(values);
       message.success("账户已创建");
       form.resetFields();
       onCancel();
@@ -395,7 +396,7 @@ function AccountModal({ open, onCancel, onRefresh }: Omit<ModalProps, "accounts"
 
   return (
     <Modal title="创建账户" open={open} confirmLoading={saving} destroyOnHidden okText="创建" cancelText="取消" onOk={form.submit} onCancel={onCancel}>
-      <Form form={form} layout="vertical" initialValues={{ maxOffsetCents: 99 }} onFinish={handleFinish}>
+      <Form form={form} layout="vertical" initialValues={{ maxOffsetCents: DEFAULT_MAX_OFFSET_CENTS }} onFinish={handleFinish}>
         <Form.Item name="code" label="编码" rules={[{ required: true, message: "请输入编码" }]}>
           <Input allowClear />
         </Form.Item>

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
   closeAppContext,
+  createAccount,
   createAppContext,
   createDeviceEnrollment,
   createOrder,
@@ -17,13 +18,14 @@ import {
 } from "../server/services";
 import type { Device, EnrollDeviceResult } from "../src/shared/types";
 import { getAdminPath, getAdminSessionState, isSetupRequired, loginAdmin, setupAdminPassword } from "../server/auth";
+import { parseMoney } from "../server/money";
 
 let ctx: AppContext;
 
 beforeEach(() => {
   ctx = createAppContext({ databaseUrl: ":memory:", runCallbacks: false });
   updateAccountSettings(ctx, 1, {
-    maxOffsetCents: 99,
+    maxOffsetCents: 10,
     fallbackPayUrl: "https://pay.example/fallback"
   });
 });
@@ -76,6 +78,41 @@ test("creates orders by dynamically assigning offset amounts", () => {
 
   const occupied = listAmountOccupations(ctx).items;
   expect(occupied).toHaveLength(2);
+});
+
+test("defaults account max offset to 10 cents", () => {
+  const account = createAccount(ctx, {
+    code: "store-a",
+    name: "门店 A"
+  });
+
+  expect(account.maxOffsetCents).toBe(10);
+  expect(account.maxOffset).toBe("0.10");
+});
+
+test("does not offset cent-level order amounts", () => {
+  const first = createOrder(ctx, {
+    accountCode: "default",
+    amount: "10.01",
+    merchantOrderId: "m-20001",
+    ttlMinutes: 10
+  });
+
+  expect(first.actualAmount).toBe("10.01");
+  expect(() => createOrder(ctx, {
+    accountCode: "default",
+    amount: "10.01",
+    merchantOrderId: "m-20002",
+    ttlMinutes: 10
+  })).toThrow("最大偏移 0.00");
+  expect(listAmountOccupations(ctx).items).toHaveLength(1);
+});
+
+test("parses money into integer cents without floating point multiplication", () => {
+  expect(parseMoney("10.01")).toBe(1001);
+  expect(parseMoney(10.01)).toBe(1001);
+  expect(parseMoney(0.3)).toBe(30);
+  expect(() => parseMoney(1.005)).toThrow("最多两位小数");
 });
 
 test("matches an android payment notification and clears the occupation", () => {

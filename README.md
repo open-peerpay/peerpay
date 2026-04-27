@@ -37,9 +37,9 @@ PEERPAY_PUBLIC_URL=https://pay.example.com bun run dev
 后台生成设备配对码 -> 通用 APK 扫码加入系统 -> 售货系统创建订单 -> 分配唯一实付金额 -> 返回付款 URL -> 用户扫码支付 -> 安卓签名上报到账 -> 匹配 pending 订单 -> 发送回调
 ```
 
-启动时会自动创建 `default` 账户。账户通过 `maxOffsetCents` 控制金额偏移范围，默认最大偏移为 `10` 分。只有整元订单允许偏移，例如订单金额 `10.00`、最大偏移 `10` 分时，会尝试分配 `10.00` 到 `10.10` 中未被 pending 订单占用的金额；若订单金额为 `10.01`，则只会分配 `10.01`，不会继续偏移到 `10.02`。
+启动时会自动创建 `default` 账户。账户通过 `maxOffsetCents` 控制金额偏移范围，默认最大偏移为 `10` 分。只有整元订单允许偏移，例如订单金额 `10.00`、最大偏移 `10` 分时，会尝试分配 `10.00` 到 `10.10` 中未被 pending 订单占用的金额；若订单金额为 `10.01`，则只会分配 `10.01`，不会继续偏移到 `10.02`。金额占用按付款方式隔离，当前固定支持 `alipay`（支付宝）和 `wechat`（微信）。
 
-付款 URL 优先使用定额二维码；若该金额没有预设二维码，则使用账户兜底通用收款码，并要求用户手动输入 `actualAmount`。数据默认写入 `data/peerpay.sqlite`。
+付款 URL 优先使用对应付款方式的定额二维码；若该金额没有预设二维码，则使用该付款方式的账户兜底通用收款码，并要求用户手动输入 `actualAmount`。数据默认写入 `data/peerpay.sqlite`。
 
 ## 常用接口
 
@@ -48,7 +48,7 @@ PEERPAY_PUBLIC_URL=https://pay.example.com bun run dev
 ```bash
 curl -X POST http://localhost:3000/api/orders \
   -H 'content-type: application/json' \
-  -d '{"accountCode":"default","amount":"10.00","merchantOrderId":"m-10001","callbackUrl":"https://merchant.example/webhook","callbackSecret":"secret"}'
+  -d '{"accountCode":"default","paymentChannel":"alipay","amount":"10.00","merchantOrderId":"m-10001","callbackUrl":"https://merchant.example/webhook","callbackSecret":"secret"}'
 ```
 
 返回字段里的 `actualAmount` 是用户实际应付金额，`payUrl` 是售货系统展示给用户扫码的 URL：
@@ -57,6 +57,7 @@ curl -X POST http://localhost:3000/api/orders \
 {
   "requestedAmount": "10.00",
   "actualAmount": "10.05",
+  "paymentChannel": "alipay",
   "payMode": "fallback",
   "amountInputRequired": true,
   "payUrl": "https://pay.example/fallback"
@@ -68,7 +69,7 @@ curl -X POST http://localhost:3000/api/orders \
 ```bash
 curl -X POST http://localhost:3000/api/preset-qrcodes \
   -H 'content-type: application/json' \
-  -d '{"accountCode":"default","items":[{"amount":"10.00","payUrl":"https://pay.example/10.00"},{"amount":"10.01","payUrl":"https://pay.example/10.01"}]}'
+  -d '{"accountCode":"default","paymentChannel":"alipay","items":[{"amount":"10.00","payUrl":"https://pay.example/alipay/10.00"},{"paymentChannel":"wechat","amount":"10.00","payUrl":"https://pay.example/wechat/10.00"}]}'
 ```
 
 生成设备配对码需要后台登录。返回的 `pairingUrl` 是一个带当前服务器地址的一次性 URL，管理台会把它渲染成二维码，通用 APK 扫码即可知道要连接哪台私有化服务器：
@@ -96,8 +97,10 @@ curl -X POST http://localhost:3000/api/android/notifications \
   -H 'x-peerpay-timestamp: TIMESTAMP' \
   -H 'x-peerpay-nonce: NONCE' \
   -H 'x-peerpay-signature: SIGNATURE' \
-  -d '{"channel":"alipay","actualAmount":"10.00","rawText":"支付宝到账 10.00 元"}'
+  -d '{"packageName":"com.eg.android.AlipayGphone","actualAmount":"10.00","rawText":"支付宝到账 10.00 元"}'
 ```
+
+安卓通知也可以直接传 `paymentChannel`/`channel`。若传 `packageName`，服务端会把 `com.eg.android.AlipayGphone` 识别为支付宝，把 `com.tencent.mm` 识别为微信，同一台安卓客户端可同时上报两个 App 的通知。
 
 安卓心跳：
 

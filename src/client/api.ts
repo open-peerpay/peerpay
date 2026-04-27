@@ -102,7 +102,7 @@ export function upsertQrCodes(input: BulkPresetQrCodeInput) {
   });
 }
 
-export function createAccount(input: { code: string; name: string; maxOffsetCents?: number; fallbackPayUrl?: string | null }) {
+export function createAccount(input: { code: string; name: string; maxOffsetCents?: number; fallbackPayUrl?: string | null; alipayFallbackPayUrl?: string | null; wechatFallbackPayUrl?: string | null }) {
   return request<Account>("/api/accounts", { method: "POST", body: JSON.stringify(input) });
 }
 
@@ -110,7 +110,7 @@ export function setAccountEnabled(id: number, enabled: boolean) {
   return request<Account>(`/api/accounts/${id}/enabled`, { method: "POST", body: JSON.stringify({ enabled }) });
 }
 
-export function updateAccountSettings(id: number, input: { maxOffsetCents?: number; fallbackPayUrl?: string | null }) {
+export function updateAccountSettings(id: number, input: { maxOffsetCents?: number; fallbackPayUrl?: string | null; alipayFallbackPayUrl?: string | null; wechatFallbackPayUrl?: string | null }) {
   return request<Account>(`/api/accounts/${id}/settings`, { method: "POST", body: JSON.stringify(input) });
 }
 

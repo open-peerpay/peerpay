@@ -26,7 +26,8 @@ beforeEach(() => {
   ctx = createAppContext({ databaseUrl: ":memory:", runCallbacks: false });
   updateAccountSettings(ctx, 1, {
     maxOffsetCents: 10,
-    fallbackPayUrl: "https://pay.example/fallback"
+    fallbackPayUrl: "https://pay.example/alipay-fallback",
+    wechatFallbackPayUrl: "https://pay.example/wechat-fallback"
   });
 });
 
@@ -68,6 +69,7 @@ test("creates orders by dynamically assigning offset amounts", () => {
   });
 
   expect(first.status).toBe("pending");
+  expect(first.paymentChannel).toBe("alipay");
   expect(first.actualAmount).toBe("10.00");
   expect(first.payMode).toBe("preset");
   expect(first.amountInputRequired).toBe(false);
@@ -78,6 +80,74 @@ test("creates orders by dynamically assigning offset amounts", () => {
 
   const occupied = listAmountOccupations(ctx).items;
   expect(occupied).toHaveLength(2);
+});
+
+test("separates amount locks and preset qr codes by payment channel", () => {
+  upsertPresetQrCodes(ctx, {
+    accountCode: "default",
+    items: [
+      { paymentChannel: "alipay", amount: "12.00", payUrl: "https://pay.example/alipay/12.00" },
+      { paymentChannel: "wechat", amount: "12.00", payUrl: "https://pay.example/wechat/12.00" }
+    ]
+  });
+
+  const alipay = createOrder(ctx, {
+    accountCode: "default",
+    paymentChannel: "alipay",
+    amount: "12.00",
+    merchantOrderId: "m-alipay",
+    ttlMinutes: 10
+  });
+  const wechat = createOrder(ctx, {
+    accountCode: "default",
+    paymentChannel: "wechat",
+    amount: "12.00",
+    merchantOrderId: "m-wechat",
+    ttlMinutes: 10
+  });
+  const nextAlipay = createOrder(ctx, {
+    accountCode: "default",
+    paymentChannel: "alipay",
+    amount: "12.00",
+    merchantOrderId: "m-alipay-next",
+    ttlMinutes: 10
+  });
+
+  expect(alipay.actualAmount).toBe("12.00");
+  expect(alipay.payUrl).toBe("https://pay.example/alipay/12.00");
+  expect(wechat.actualAmount).toBe("12.00");
+  expect(wechat.payUrl).toBe("https://pay.example/wechat/12.00");
+  expect(nextAlipay.actualAmount).toBe("12.01");
+
+  const occupied = listAmountOccupations(ctx).items;
+  expect(occupied).toHaveLength(3);
+  expect(occupied.map((item) => `${item.paymentChannel}:${item.actualAmount}`).sort()).toEqual([
+    "alipay:12.00",
+    "alipay:12.01",
+    "wechat:12.00"
+  ]);
+});
+
+test("uses channel-specific fallback pay urls", () => {
+  const alipay = createOrder(ctx, {
+    accountCode: "default",
+    paymentChannel: "alipay",
+    amount: "13.00",
+    merchantOrderId: "fallback-alipay",
+    ttlMinutes: 10
+  });
+  const wechat = createOrder(ctx, {
+    accountCode: "default",
+    paymentChannel: "wechat",
+    amount: "13.00",
+    merchantOrderId: "fallback-wechat",
+    ttlMinutes: 10
+  });
+
+  expect(alipay.actualAmount).toBe("13.00");
+  expect(alipay.payUrl).toBe("https://pay.example/alipay-fallback");
+  expect(wechat.actualAmount).toBe("13.00");
+  expect(wechat.payUrl).toBe("https://pay.example/wechat-fallback");
 });
 
 test("defaults account max offset to 10 cents", () => {
@@ -133,6 +203,42 @@ test("matches an android payment notification and clears the occupation", () => 
   expect(result.order?.id).toBe(order.id);
   expect(result.order?.status).toBe("paid");
   expect(listAmountOccupations(ctx).items).toHaveLength(0);
+});
+
+test("matches android payment notifications by package name", () => {
+  const { device } = enrollTestDevice();
+  const alipayOrder = createOrder(ctx, {
+    accountCode: "default",
+    paymentChannel: "alipay",
+    amount: "20.00",
+    merchantOrderId: "pkg-alipay"
+  });
+  const wechatOrder = createOrder(ctx, {
+    accountCode: "default",
+    paymentChannel: "wechat",
+    amount: "20.00",
+    merchantOrderId: "pkg-wechat"
+  });
+
+  const wechatResult = handleAndroidNotification(ctx, {
+    packageName: "com.tencent.mm",
+    actualAmount: "20.00",
+    rawText: "微信收款到账 20.00 元"
+  }, device);
+  const alipayResult = handleAndroidNotification(ctx, {
+    packageName: "com.eg.android.AlipayGphone",
+    actualAmount: "20.00",
+    rawText: "支付宝到账 20.00 元"
+  }, device);
+
+  expect(wechatResult.matched).toBe(true);
+  expect(wechatResult.order?.id).toBe(wechatOrder.id);
+  expect(wechatResult.order?.id).not.toBe(alipayOrder.id);
+  expect(wechatResult.log.paymentChannel).toBe("wechat");
+  expect(wechatResult.log.packageName).toBe("com.tencent.mm");
+  expect(alipayResult.matched).toBe(true);
+  expect(alipayResult.order?.id).toBe(alipayOrder.id);
+  expect(alipayResult.log.paymentChannel).toBe("alipay");
 });
 
 test("records parse failures for unstructured notifications", () => {

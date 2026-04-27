@@ -47,10 +47,11 @@ import type {
   NotificationLog,
   Order,
   OrderStatus,
+  PaymentChannel,
   PresetQrCode,
   SystemLog
 } from "../shared/types";
-import { DEFAULT_MAX_OFFSET_CENTS } from "../shared/constants";
+import { DEFAULT_MAX_OFFSET_CENTS, DEFAULT_PAYMENT_CHANNEL, PAYMENT_CHANNEL_LABELS, PAYMENT_CHANNEL_OPTIONS } from "../shared/constants";
 import {
   createAccount,
   createDeviceEnrollment,
@@ -136,6 +137,8 @@ const statusText: Record<string, string> = {
   expired: "已过期",
   preset: "定额码",
   fallback: "通用码",
+  alipay: "支付宝",
+  wechat: "微信",
   matched: "已匹配",
   unmatched: "未匹配",
   parse_failed: "解析失败",
@@ -145,6 +148,15 @@ const statusText: Record<string, string> = {
   warn: "警告",
   error: "异常"
 };
+
+const paymentChannelOptions = PAYMENT_CHANNEL_OPTIONS.map((option) => ({
+  label: option.label,
+  value: option.value
+}));
+
+function PaymentChannelTag({ value }: { value: PaymentChannel | null | undefined }) {
+  return value ? <Tag color={value === "wechat" ? "green" : "blue"}>{PAYMENT_CHANNEL_LABELS[value]}</Tag> : <Tag>未知</Tag>;
+}
 
 function StatusTag({ value }: { value: string }) {
   return <Tag color={statusColor[value] ?? "default"}>{statusText[value] ?? value}</Tag>;
@@ -271,7 +283,7 @@ function QrCodeModal({ accounts, open, onCancel, onRefresh }: ModalProps) {
     value: account.code
   })), [accounts]);
 
-  const handleFinish = useCallback(async (values: { accountCode: string; lines: string }) => {
+  const handleFinish = useCallback(async (values: { accountCode: string; paymentChannel: PaymentChannel; lines: string }) => {
     const items = normalizeQrLines(values.lines);
     if (items.some((item) => !item.amount || !item.payUrl)) {
       message.error("二维码配置格式无效");
@@ -280,7 +292,7 @@ function QrCodeModal({ accounts, open, onCancel, onRefresh }: ModalProps) {
 
     setSaving(true);
     try {
-      const result = await upsertQrCodes({ accountCode: values.accountCode, items });
+      const result = await upsertQrCodes({ accountCode: values.accountCode, paymentChannel: values.paymentChannel, items });
       message.success(`已保存 ${result.saved} 条二维码`);
       form.resetFields();
       onCancel();
@@ -294,9 +306,12 @@ function QrCodeModal({ accounts, open, onCancel, onRefresh }: ModalProps) {
 
   return (
     <Modal title="导入定额二维码" open={open} confirmLoading={saving} destroyOnHidden okText="保存" cancelText="取消" onOk={form.submit} onCancel={onCancel}>
-      <Form form={form} layout="vertical" onFinish={handleFinish}>
+      <Form form={form} layout="vertical" initialValues={{ paymentChannel: DEFAULT_PAYMENT_CHANNEL }} onFinish={handleFinish}>
         <Form.Item name="accountCode" label="账户" rules={[{ required: true, message: "请选择账户" }]}>
           <Select options={accountOptions} placeholder="选择账户" />
+        </Form.Item>
+        <Form.Item name="paymentChannel" label="付款方式" rules={[{ required: true, message: "请选择付款方式" }]}>
+          <Select options={paymentChannelOptions} />
         </Form.Item>
         <Form.Item name="lines" label="二维码" rules={[{ required: true, message: "请输入二维码配置" }]}>
           <TextArea rows={10} placeholder={"10.00 https://pay.example/10.00\n10.01 https://pay.example/10.01"} />
@@ -379,10 +394,14 @@ function AccountModal({ open, onCancel, onRefresh }: Omit<ModalProps, "accounts"
   const { message } = AntApp.useApp();
   const [saving, setSaving] = useState(false);
 
-  const handleFinish = useCallback(async (values: { code: string; name: string; maxOffsetCents: number; fallbackPayUrl?: string }) => {
+  const handleFinish = useCallback(async (values: { code: string; name: string; maxOffsetCents: number; alipayFallbackPayUrl?: string; wechatFallbackPayUrl?: string }) => {
     setSaving(true);
     try {
-      await createAccount(values);
+      await createAccount({
+        ...values,
+        alipayFallbackPayUrl: values.alipayFallbackPayUrl || null,
+        wechatFallbackPayUrl: values.wechatFallbackPayUrl || null
+      });
       message.success("账户已创建");
       form.resetFields();
       onCancel();
@@ -406,7 +425,10 @@ function AccountModal({ open, onCancel, onRefresh }: Omit<ModalProps, "accounts"
         <Form.Item name="maxOffsetCents" label="最大偏移分" rules={[{ required: true, message: "请输入最大偏移" }]}>
           <InputNumber min={0} max={9999} precision={0} className="full-width" />
         </Form.Item>
-        <Form.Item name="fallbackPayUrl" label="兜底收款码 URL">
+        <Form.Item name="alipayFallbackPayUrl" label="支付宝兜底收款码 URL">
+          <Input allowClear />
+        </Form.Item>
+        <Form.Item name="wechatFallbackPayUrl" label="微信兜底收款码 URL">
           <Input allowClear />
         </Form.Item>
       </Form>
@@ -430,12 +452,13 @@ function AccountSettingsModal({ account, open, onCancel, onRefresh }: AccountSet
     if (account && open) {
       form.setFieldsValue({
         maxOffsetCents: account.maxOffsetCents,
-        fallbackPayUrl: account.fallbackPayUrl
+        alipayFallbackPayUrl: account.alipayFallbackPayUrl,
+        wechatFallbackPayUrl: account.wechatFallbackPayUrl
       });
     }
   }, [account, form, open]);
 
-  const handleFinish = useCallback(async (values: { maxOffsetCents: number; fallbackPayUrl?: string }) => {
+  const handleFinish = useCallback(async (values: { maxOffsetCents: number; alipayFallbackPayUrl?: string; wechatFallbackPayUrl?: string }) => {
     if (!account) {
       return;
     }
@@ -443,7 +466,8 @@ function AccountSettingsModal({ account, open, onCancel, onRefresh }: AccountSet
     try {
       await updateAccountSettings(account.id, {
         maxOffsetCents: values.maxOffsetCents,
-        fallbackPayUrl: values.fallbackPayUrl || null
+        alipayFallbackPayUrl: values.alipayFallbackPayUrl || null,
+        wechatFallbackPayUrl: values.wechatFallbackPayUrl || null
       });
       message.success("账户配置已更新");
       onCancel();
@@ -461,7 +485,10 @@ function AccountSettingsModal({ account, open, onCancel, onRefresh }: AccountSet
         <Form.Item name="maxOffsetCents" label="最大偏移分" rules={[{ required: true, message: "请输入最大偏移" }]}>
           <InputNumber min={0} max={9999} precision={0} className="full-width" />
         </Form.Item>
-        <Form.Item name="fallbackPayUrl" label="兜底收款码 URL">
+        <Form.Item name="alipayFallbackPayUrl" label="支付宝兜底收款码 URL">
+          <Input allowClear />
+        </Form.Item>
+        <Form.Item name="wechatFallbackPayUrl" label="微信兜底收款码 URL">
           <Input allowClear />
         </Form.Item>
       </Form>
@@ -504,6 +531,7 @@ function DashboardView({ snapshot }: { snapshot: Snapshot }) {
             { title: "订单号", dataIndex: "id", ellipsis: true },
             { title: "账户", dataIndex: "accountCode", width: 110 },
             { title: "实付金额", dataIndex: "actualAmount", width: 110 },
+            { title: "方式", dataIndex: "paymentChannel", width: 90, render: (value) => <PaymentChannelTag value={value} /> },
             { title: "付款", dataIndex: "payMode", width: 110, render: (value) => <StatusTag value={String(value)} /> },
             { title: "状态", dataIndex: "status", width: 110, render: (value) => <StatusTag value={String(value)} /> },
             { title: "创建时间", dataIndex: "createdAt", width: 190, render: formatDate }
@@ -600,6 +628,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     { title: "订单号", dataIndex: "id", width: 220, ellipsis: true },
     { title: "商户单号", dataIndex: "merchantOrderId", width: 160, ellipsis: true, render: (value) => value || "-" },
     { title: "账户", dataIndex: "accountCode", width: 110 },
+    { title: "方式", dataIndex: "paymentChannel", width: 90, render: (value) => <PaymentChannelTag value={value} /> },
     { title: "订单金额", dataIndex: "requestedAmount", width: 110 },
     { title: "实付金额", dataIndex: "actualAmount", width: 110 },
     { title: "付款", dataIndex: "payMode", width: 110, render: (value) => <StatusTag value={String(value)} /> },
@@ -627,6 +656,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
   const occupationColumns = useMemo<Columns<AmountOccupation>>(() => [
     { title: "订单号", dataIndex: "orderId", width: 220, ellipsis: true },
     { title: "账户", dataIndex: "accountCode", width: 110 },
+    { title: "方式", dataIndex: "paymentChannel", width: 90, render: (value) => <PaymentChannelTag value={value} /> },
     { title: "订单金额", dataIndex: "requestedAmount", width: 110 },
     { title: "占用金额", dataIndex: "actualAmount", width: 110 },
     { title: "付款", dataIndex: "payMode", width: 110, render: (value) => <StatusTag value={String(value)} /> },
@@ -635,6 +665,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
 
   const qrColumns = useMemo<Columns<PresetQrCode>>(() => [
     { title: "账户", dataIndex: "accountCode", width: 110 },
+    { title: "方式", dataIndex: "paymentChannel", width: 90, render: (value) => <PaymentChannelTag value={value} /> },
     { title: "金额", dataIndex: "amount", width: 110 },
     { title: "付款 URL", dataIndex: "payUrl", ellipsis: true },
     { title: "更新时间", dataIndex: "updatedAt", width: 190, render: formatDate },
@@ -655,7 +686,8 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     { title: "编码", dataIndex: "code", width: 140 },
     { title: "名称", dataIndex: "name" },
     { title: "最大偏移", dataIndex: "maxOffsetCents", width: 110, render: (value) => `${value} 分` },
-    { title: "兜底码", dataIndex: "fallbackPayUrl", width: 100, render: (value) => value ? <Tag color="success">已配置</Tag> : <Tag>未配置</Tag> },
+    { title: "支付宝兜底", dataIndex: "alipayFallbackPayUrl", width: 110, render: (value) => value ? <Tag color="success">已配置</Tag> : <Tag>未配置</Tag> },
+    { title: "微信兜底", dataIndex: "wechatFallbackPayUrl", width: 100, render: (value) => value ? <Tag color="success">已配置</Tag> : <Tag>未配置</Tag> },
     { title: "状态", dataIndex: "enabled", width: 100, render: (value) => value ? <Tag color="success">启用</Tag> : <Tag color="default">停用</Tag> },
     {
       title: "操作",
@@ -687,6 +719,8 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     { title: "时间", dataIndex: "receivedAt", width: 190, render: formatDate },
     { title: "账户", dataIndex: "accountCode", width: 110 },
     { title: "设备", dataIndex: "deviceId", width: 160, ellipsis: true, render: (value) => value || "-" },
+    { title: "方式", dataIndex: "paymentChannel", width: 90, render: (value) => <PaymentChannelTag value={value} /> },
+    { title: "包名", dataIndex: "packageName", width: 190, ellipsis: true, render: (value) => value || "-" },
     { title: "金额", dataIndex: "actualAmount", width: 110, render: (value) => value || "-" },
     { title: "状态", dataIndex: "status", width: 110, render: (value) => <StatusTag value={String(value)} /> },
     { title: "订单号", dataIndex: "matchedOrderId", width: 220, ellipsis: true, render: (value) => value || "-" },
@@ -735,7 +769,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     if (activeView === "orders") {
       return (
         <section className="panel">
-          <Table<Order> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.orders.items} columns={orderColumns} scroll={{ x: 1480 }} pagination={{ total: snapshot.orders.total, pageSize: snapshot.orders.limit, showSizeChanger: false }} />
+          <Table<Order> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.orders.items} columns={orderColumns} scroll={{ x: 1570 }} pagination={{ total: snapshot.orders.total, pageSize: snapshot.orders.limit, showSizeChanger: false }} />
         </section>
       );
     }
@@ -753,8 +787,8 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
       return (
         <section className="panel">
           <Tabs items={[
-            { key: "occupied", label: "占用金额", children: <Table<AmountOccupation> size="small" rowKey="orderId" loading={loading || isPending} dataSource={snapshot.occupations.items} columns={occupationColumns} scroll={{ x: 900 }} pagination={{ total: snapshot.occupations.total, pageSize: snapshot.occupations.limit, showSizeChanger: false }} /> },
-            { key: "qrcodes", label: "定额二维码", children: <Table<PresetQrCode> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.qrCodes.items} columns={qrColumns} scroll={{ x: 900 }} pagination={{ total: snapshot.qrCodes.total, pageSize: snapshot.qrCodes.limit, showSizeChanger: false }} /> }
+            { key: "occupied", label: "占用金额", children: <Table<AmountOccupation> size="small" rowKey="orderId" loading={loading || isPending} dataSource={snapshot.occupations.items} columns={occupationColumns} scroll={{ x: 990 }} pagination={{ total: snapshot.occupations.total, pageSize: snapshot.occupations.limit, showSizeChanger: false }} /> },
+            { key: "qrcodes", label: "定额二维码", children: <Table<PresetQrCode> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.qrCodes.items} columns={qrColumns} scroll={{ x: 990 }} pagination={{ total: snapshot.qrCodes.total, pageSize: snapshot.qrCodes.limit, showSizeChanger: false }} /> }
           ]} />
         </section>
       );
@@ -763,7 +797,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
       return (
         <section className="panel">
           <Tabs items={[
-            { key: "notifications", label: "通知日志", children: <Table<NotificationLog> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.notifications.items} columns={notificationColumns} scroll={{ x: 1180 }} pagination={{ total: snapshot.notifications.total, pageSize: snapshot.notifications.limit, showSizeChanger: false }} /> },
+            { key: "notifications", label: "通知日志", children: <Table<NotificationLog> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.notifications.items} columns={notificationColumns} scroll={{ x: 1460 }} pagination={{ total: snapshot.notifications.total, pageSize: snapshot.notifications.limit, showSizeChanger: false }} /> },
             { key: "system", label: "系统日志", children: <Table<SystemLog> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.systemLogs.items} columns={systemLogColumns} pagination={{ total: snapshot.systemLogs.total, pageSize: snapshot.systemLogs.limit, showSizeChanger: false }} /> }
           ]} />
         </section>

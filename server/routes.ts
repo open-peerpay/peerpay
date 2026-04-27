@@ -134,7 +134,8 @@ export function createApiRoutes(ctx: AppContext) {
         const url = new URL(req.url);
         return json(listPresetQrCodes(ctx, {
           ...pageOptions(url),
-          accountCode: url.searchParams.get("accountCode") ?? undefined
+          accountCode: url.searchParams.get("accountCode") ?? undefined,
+          paymentChannel: url.searchParams.get("paymentChannel") ?? url.searchParams.get("channel") ?? undefined
         }));
       })),
       POST: (req: Request) => withErrors(async () => {
@@ -143,7 +144,8 @@ export function createApiRoutes(ctx: AppContext) {
           const result = upsertPresetQrCodes(ctx, Array.isArray(body.items) ? body : {
             accountId: body.accountId,
             accountCode: body.accountCode,
-            items: [{ amount: body.amount ?? "", payUrl: body.payUrl ?? "" }]
+            paymentChannel: body.paymentChannel ?? body.channel,
+            items: [{ paymentChannel: body.paymentChannel ?? body.channel, amount: body.amount ?? "", payUrl: body.payUrl ?? "" }]
           });
           return json(result, { status: 201 });
         });

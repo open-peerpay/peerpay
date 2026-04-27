@@ -2,7 +2,7 @@ import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createDatabase } from "./db";
 import { extractMoneyFromText, formatMoney, parseMoney } from "./money";
-import { DEFAULT_MAX_OFFSET_CENTS } from "../src/shared/constants";
+import { DEFAULT_MAX_OFFSET_CENTS, DEFAULT_PAYMENT_CHANNEL } from "../src/shared/constants";
 import type {
   Account,
   AndroidNotificationInput,
@@ -25,6 +25,7 @@ import type {
   OrderStatus,
   Page,
   PayMode,
+  PaymentChannel,
   PresetQrCode,
   SystemLog
 } from "../src/shared/types";
@@ -32,6 +33,17 @@ import type {
 const DEFAULT_ORDER_TTL_MINUTES = 15;
 const DEVICE_ONLINE_WINDOW_MS = 2 * 60 * 1000;
 const MAX_CALLBACK_ATTEMPTS = 5;
+const PAYMENT_CHANNEL_ALIASES: Record<string, PaymentChannel> = {
+  alipay: "alipay",
+  ali: "alipay",
+  "支付宝": "alipay",
+  "com.eg.android.alipaygphone": "alipay",
+  wechat: "wechat",
+  weixin: "wechat",
+  wx: "wechat",
+  "微信": "wechat",
+  "com.tencent.mm": "wechat"
+};
 
 type RowBool = 0 | 1;
 
@@ -42,6 +54,7 @@ interface AccountRow {
   enabled: RowBool;
   max_offset_cents: number;
   fallback_pay_url: string | null;
+  wechat_fallback_pay_url: string | null;
   created_at: string;
 }
 
@@ -49,6 +62,7 @@ interface PresetQrCodeRow {
   id: number;
   account_id: number;
   account_code: string;
+  payment_channel: PaymentChannel;
   amount_cents: number;
   pay_url: string;
   created_at: string;
@@ -62,6 +76,7 @@ interface OrderRow {
   account_code: string;
   requested_amount_cents: number;
   actual_amount_cents: number;
+  payment_channel: PaymentChannel;
   pay_url: string;
   pay_mode: PayMode;
   amount_input_required: RowBool;
@@ -108,6 +123,8 @@ interface NotificationRow {
   account_code: string;
   device_id: string | null;
   channel: string | null;
+  payment_channel: PaymentChannel | null;
+  package_name: string | null;
   actual_amount_cents: number | null;
   raw_text: string;
   matched_order_id: string | null;
@@ -198,6 +215,8 @@ function mapAccount(row: AccountRow): Account {
     maxOffsetCents: row.max_offset_cents,
     maxOffset: formatMoney(row.max_offset_cents) ?? "0.00",
     fallbackPayUrl: row.fallback_pay_url,
+    alipayFallbackPayUrl: row.fallback_pay_url,
+    wechatFallbackPayUrl: row.wechat_fallback_pay_url,
     createdAt: row.created_at
   };
 }
@@ -207,6 +226,7 @@ function mapPresetQrCode(row: PresetQrCodeRow): PresetQrCode {
     id: row.id,
     accountId: row.account_id,
     accountCode: row.account_code,
+    paymentChannel: row.payment_channel,
     amount: formatMoney(row.amount_cents) ?? "0.00",
     amountCents: row.amount_cents,
     payUrl: row.pay_url,
@@ -225,6 +245,7 @@ function mapOrder(row: OrderRow): Order {
     requestedAmountCents: row.requested_amount_cents,
     actualAmount: formatMoney(row.actual_amount_cents) ?? "0.00",
     actualAmountCents: row.actual_amount_cents,
+    paymentChannel: row.payment_channel,
     payUrl: row.pay_url,
     payMode: row.pay_mode,
     amountInputRequired: row.amount_input_required === 1,
@@ -279,6 +300,8 @@ function mapNotification(row: NotificationRow): NotificationLog {
     accountId: row.account_id,
     accountCode: row.account_code,
     deviceId: row.device_id,
+    paymentChannel: row.payment_channel,
+    packageName: row.package_name,
     channel: row.channel,
     actualAmount: formatMoney(row.actual_amount_cents),
     actualAmountCents: row.actual_amount_cents,
@@ -403,6 +426,40 @@ function normalizeMaxOffset(value: number) {
   return value;
 }
 
+function normalizePaymentChannel(value: unknown, fallback: PaymentChannel = DEFAULT_PAYMENT_CHANNEL): PaymentChannel {
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return fallback;
+  }
+
+  const channel = PAYMENT_CHANNEL_ALIASES[text.toLowerCase()] ?? PAYMENT_CHANNEL_ALIASES[text];
+  if (!channel) {
+    throw apiError(400, "付款方式仅支持微信或支付宝");
+  }
+  return channel;
+}
+
+function packageNameFromNotification(input: AndroidNotificationInput) {
+  return (input.packageName ?? input.appPackageName ?? input.appPackage ?? input.package ?? "").trim();
+}
+
+function inferPaymentChannel(input: AndroidNotificationInput, rawText: string) {
+  const packageName = packageNameFromNotification(input);
+  if (input.paymentChannel || input.channel) {
+    return normalizePaymentChannel(input.paymentChannel ?? input.channel);
+  }
+  if (packageName) {
+    return normalizePaymentChannel(packageName);
+  }
+  if (/微信|wechat/i.test(rawText)) {
+    return "wechat";
+  }
+  if (/支付宝|alipay/i.test(rawText)) {
+    return "alipay";
+  }
+  return DEFAULT_PAYMENT_CHANNEL;
+}
+
 function normalizePayUrl(value: string | null | undefined, optional = false) {
   const text = value?.trim() ?? "";
   if (!text) {
@@ -458,12 +515,20 @@ export function listAccounts(ctx: AppContext) {
 
 export function createAccount(
   ctx: AppContext,
-  input: { code: string; name: string; maxOffsetCents?: number; fallbackPayUrl?: string | null }
+  input: {
+    code: string;
+    name: string;
+    maxOffsetCents?: number;
+    fallbackPayUrl?: string | null;
+    alipayFallbackPayUrl?: string | null;
+    wechatFallbackPayUrl?: string | null;
+  }
 ) {
   const code = input.code.trim();
   const name = input.name.trim();
   const maxOffsetCents = normalizeMaxOffset(input.maxOffsetCents ?? DEFAULT_MAX_OFFSET_CENTS);
-  const fallbackPayUrl = normalizePayUrl(input.fallbackPayUrl ?? null, true);
+  const fallbackPayUrl = normalizePayUrl(input.alipayFallbackPayUrl ?? input.fallbackPayUrl ?? null, true);
+  const wechatFallbackPayUrl = normalizePayUrl(input.wechatFallbackPayUrl ?? null, true);
   if (!/^[a-zA-Z0-9_-]{2,32}$/.test(code)) {
     throw apiError(400, "账户编码仅支持 2-32 位字母、数字、下划线或短横线");
   }
@@ -472,8 +537,8 @@ export function createAccount(
   }
 
   try {
-    ctx.db.query("INSERT INTO accounts(code, name, max_offset_cents, fallback_pay_url) VALUES (?, ?, ?, ?)")
-      .run(code, name, maxOffsetCents, fallbackPayUrl);
+    ctx.db.query("INSERT INTO accounts(code, name, max_offset_cents, fallback_pay_url, wechat_fallback_pay_url) VALUES (?, ?, ?, ?, ?)")
+      .run(code, name, maxOffsetCents, fallbackPayUrl, wechatFallbackPayUrl);
   } catch {
     throw apiError(409, "账户编码已存在");
   }
@@ -500,7 +565,12 @@ export function setAccountEnabled(ctx: AppContext, id: number, enabled: boolean)
 export function updateAccountSettings(
   ctx: AppContext,
   id: number,
-  input: { maxOffsetCents?: number; fallbackPayUrl?: string | null }
+  input: {
+    maxOffsetCents?: number;
+    fallbackPayUrl?: string | null;
+    alipayFallbackPayUrl?: string | null;
+    wechatFallbackPayUrl?: string | null;
+  }
 ) {
   const account = accountById(ctx, id);
   if (!account) {
@@ -509,16 +579,25 @@ export function updateAccountSettings(
 
   const maxOffsetCents = normalizeMaxOffset(input.maxOffsetCents ?? account.maxOffsetCents);
   const fallbackPayUrl = normalizePayUrl(
-    input.fallbackPayUrl === undefined ? account.fallbackPayUrl : input.fallbackPayUrl,
+    input.alipayFallbackPayUrl === undefined
+      ? input.fallbackPayUrl === undefined
+        ? account.alipayFallbackPayUrl
+        : input.fallbackPayUrl
+      : input.alipayFallbackPayUrl,
+    true
+  );
+  const wechatFallbackPayUrl = normalizePayUrl(
+    input.wechatFallbackPayUrl === undefined ? account.wechatFallbackPayUrl : input.wechatFallbackPayUrl,
     true
   );
 
-  ctx.db.query("UPDATE accounts SET max_offset_cents = ?, fallback_pay_url = ? WHERE id = ?")
-    .run(maxOffsetCents, fallbackPayUrl, id);
+  ctx.db.query("UPDATE accounts SET max_offset_cents = ?, fallback_pay_url = ?, wechat_fallback_pay_url = ? WHERE id = ?")
+    .run(maxOffsetCents, fallbackPayUrl, wechatFallbackPayUrl, id);
   logSystem(ctx, "info", "accounts.settings_updated", "账户收款设置已更新", {
     accountId: id,
     maxOffsetCents,
-    hasFallbackPayUrl: Boolean(fallbackPayUrl)
+    hasAlipayFallbackPayUrl: Boolean(fallbackPayUrl),
+    hasWechatFallbackPayUrl: Boolean(wechatFallbackPayUrl)
   });
   return accountById(ctx, id);
 }
@@ -534,19 +613,21 @@ export function upsertPresetQrCodes(ctx: AppContext, input: BulkPresetQrCodeInpu
 
   const now = nowIso();
   const upsert = ctx.db.query(`
-    INSERT INTO preset_qr_codes(account_id, amount_cents, pay_url, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(account_id, amount_cents) DO UPDATE SET
+    INSERT INTO preset_qr_codes(account_id, payment_channel, amount_cents, pay_url, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, payment_channel, amount_cents) DO UPDATE SET
       pay_url = excluded.pay_url,
       updated_at = excluded.updated_at
   `);
+  const inputPaymentChannel = normalizePaymentChannel(input.paymentChannel ?? input.channel);
 
   let saved = 0;
   const transaction = ctx.db.transaction(() => {
     for (const item of input.items) {
+      const paymentChannel = normalizePaymentChannel(item.paymentChannel ?? item.channel, inputPaymentChannel);
       const amountCents = parseMoney(item.amount);
       const payUrl = normalizePayUrl(item.payUrl);
-      upsert.run(account.id, amountCents, payUrl, now, now);
+      upsert.run(account.id, paymentChannel, amountCents, payUrl, now, now);
       saved += 1;
     }
   });
@@ -561,7 +642,7 @@ export function upsertPresetQrCodes(ctx: AppContext, input: BulkPresetQrCodeInpu
 
 export function listPresetQrCodes(
   ctx: AppContext,
-  options: { accountId?: number; accountCode?: string; limit?: number; offset?: number } = {}
+  options: { accountId?: number; accountCode?: string; paymentChannel?: string; limit?: number; offset?: number } = {}
 ): Page<PresetQrCode> {
   const filters: string[] = [];
   const params: SQLQueryBindings[] = [];
@@ -574,6 +655,10 @@ export function listPresetQrCodes(
     filters.push("a.code = ?");
     params.push(options.accountCode);
   }
+  if (options.paymentChannel) {
+    filters.push("q.payment_channel = ?");
+    params.push(normalizePaymentChannel(options.paymentChannel));
+  }
 
   const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
   const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
@@ -583,7 +668,7 @@ export function listPresetQrCodes(
     FROM preset_qr_codes q
     JOIN accounts a ON a.id = q.account_id
     ${where}
-    ORDER BY q.account_id ASC, q.amount_cents ASC
+    ORDER BY q.account_id ASC, q.payment_channel ASC, q.amount_cents ASC
     LIMIT ? OFFSET ?
   `).all(...params, limit, offset) as PresetQrCodeRow[];
   const total = scalar(ctx, `
@@ -612,6 +697,7 @@ export function deletePresetQrCode(ctx: AppContext, id: number) {
   logSystem(ctx, "warn", "preset_qr_codes.deleted", "定额二维码已删除", {
     qrCodeId: id,
     accountId: row.account_id,
+    paymentChannel: row.payment_channel,
     amount: formatMoney(row.amount_cents)
   });
 
@@ -621,6 +707,7 @@ export function deletePresetQrCode(ctx: AppContext, id: number) {
 function allocateActualAmount(
   ctx: AppContext,
   accountId: number,
+  paymentChannel: PaymentChannel,
   requestedAmount: number,
   maxOffsetCents: number,
   now: string
@@ -630,10 +717,11 @@ function allocateActualAmount(
     SELECT actual_amount_cents AS amount
     FROM orders
     WHERE account_id = ?
+      AND payment_channel = ?
       AND status = 'pending'
       AND expire_at > ?
       AND actual_amount_cents BETWEEN ? AND ?
-  `).all(accountId, now, requestedAmount, requestedAmount + effectiveMaxOffsetCents) as Array<{ amount: number }>;
+  `).all(accountId, paymentChannel, now, requestedAmount, requestedAmount + effectiveMaxOffsetCents) as Array<{ amount: number }>;
   const occupied = new Set(rows.map((row) => row.amount));
 
   for (let offset = 0; offset <= effectiveMaxOffsetCents; offset += 1) {
@@ -646,20 +734,25 @@ function allocateActualAmount(
   throw apiError(409, `订单金额 ${formatMoney(requestedAmount)} 在最大偏移 ${formatMoney(effectiveMaxOffsetCents)} 内已被占满`);
 }
 
-function findPresetQrCode(ctx: AppContext, accountId: number, amountCents: number) {
+function findPresetQrCode(ctx: AppContext, accountId: number, paymentChannel: PaymentChannel, amountCents: number) {
   const row = ctx.db.query(`
     SELECT q.*, a.code AS account_code
     FROM preset_qr_codes q
     JOIN accounts a ON a.id = q.account_id
-    WHERE q.account_id = ? AND q.amount_cents = ?
-  `).get(accountId, amountCents) as PresetQrCodeRow | null;
+    WHERE q.account_id = ? AND q.payment_channel = ? AND q.amount_cents = ?
+  `).get(accountId, paymentChannel, amountCents) as PresetQrCodeRow | null;
 
   return row ? mapPresetQrCode(row) : null;
+}
+
+function fallbackPayUrlForChannel(account: Account, paymentChannel: PaymentChannel) {
+  return paymentChannel === "wechat" ? account.wechatFallbackPayUrl : account.alipayFallbackPayUrl;
 }
 
 export function createOrder(ctx: AppContext, input: CreateOrderInput) {
   releaseExpiredLocks(ctx);
   const account = resolveAccount(ctx, input, true);
+  const paymentChannel = normalizePaymentChannel(input.paymentChannel ?? input.channel);
   const requestedAmount = parseMoney(input.amount);
   const ttlMinutes = Math.min(Math.max(input.ttlMinutes ?? DEFAULT_ORDER_TTL_MINUTES, 1), 1440);
   const now = nowIso();
@@ -667,9 +760,9 @@ export function createOrder(ctx: AppContext, input: CreateOrderInput) {
   const id = createOrderId();
 
   const createTransaction = ctx.db.transaction(() => {
-    const actualAmount = allocateActualAmount(ctx, account.id, requestedAmount, account.maxOffsetCents, now);
-    const preset = findPresetQrCode(ctx, account.id, actualAmount);
-    const payUrl = preset?.payUrl ?? account.fallbackPayUrl;
+    const actualAmount = allocateActualAmount(ctx, account.id, paymentChannel, requestedAmount, account.maxOffsetCents, now);
+    const preset = findPresetQrCode(ctx, account.id, paymentChannel, actualAmount);
+    const payUrl = preset?.payUrl ?? fallbackPayUrlForChannel(account, paymentChannel);
     const payMode: PayMode = preset ? "preset" : "fallback";
 
     if (!payUrl) {
@@ -678,16 +771,17 @@ export function createOrder(ctx: AppContext, input: CreateOrderInput) {
 
     ctx.db.query(`
       INSERT INTO orders(
-        id, merchant_order_id, account_id, requested_amount_cents, actual_amount_cents, pay_url, pay_mode, amount_input_required,
+        id, merchant_order_id, account_id, requested_amount_cents, actual_amount_cents, payment_channel, pay_url, pay_mode, amount_input_required,
         status, subject, callback_url, callback_secret, expire_at, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       input.merchantOrderId?.trim() || null,
       account.id,
       requestedAmount,
       actualAmount,
+      paymentChannel,
       payUrl,
       payMode,
       payMode === "fallback" ? 1 : 0,
@@ -708,6 +802,7 @@ export function createOrder(ctx: AppContext, input: CreateOrderInput) {
   logSystem(ctx, "info", "orders.created", "订单已创建并分配金额", {
     orderId: id,
     accountId: account.id,
+    paymentChannel: order.paymentChannel,
     requestedAmount: formatMoney(requestedAmount),
     actualAmount: order.actualAmount,
     payMode: order.payMode
@@ -1050,6 +1145,9 @@ export function handleAndroidNotification(
   }
   const account = resolveAccount(ctx, { accountId: verifiedDevice.accountId }, true);
   const rawText = input.rawText?.trim() || input.text?.trim() || "";
+  const packageName = packageNameFromNotification(input);
+  const paymentChannel = inferPaymentChannel(input, rawText);
+  const rawChannel = input.channel?.trim() || null;
   const amountCents = input.actualAmount != null
     ? parseMoney(input.actualAmount)
     : input.amount != null
@@ -1063,7 +1161,9 @@ export function handleAndroidNotification(
     const log = insertNotificationLog(ctx, {
       accountId: account.id,
       deviceId,
-      channel: input.channel,
+      channel: rawChannel,
+      paymentChannel,
+      packageName,
       amountCents: null,
       rawText,
       matchedOrderId: null,
@@ -1081,12 +1181,13 @@ export function handleAndroidNotification(
       FROM orders o
       JOIN accounts a ON a.id = o.account_id
       WHERE o.account_id = ?
+        AND o.payment_channel = ?
         AND o.actual_amount_cents = ?
         AND o.status = 'pending'
         AND o.expire_at > ?
       ORDER BY o.created_at ASC
       LIMIT 1
-    `).get(account.id, amountCents, now) as OrderRow | null;
+    `).get(account.id, paymentChannel, amountCents, now) as OrderRow | null;
 
     if (orderRow) {
       ctx.db.query(`
@@ -1100,7 +1201,9 @@ export function handleAndroidNotification(
     const log = insertNotificationLog(ctx, {
       accountId: account.id,
       deviceId,
-      channel: input.channel,
+      channel: rawChannel,
+      paymentChannel,
+      packageName,
       amountCents,
       rawText,
       matchedOrderId: matchedOrder?.id ?? null,
@@ -1117,12 +1220,15 @@ export function handleAndroidNotification(
   if (matchedOrder) {
     logSystem(ctx, "info", "notifications.matched", "到账通知已匹配订单", {
       orderId: matchedOrder.id,
+      paymentChannel,
       amount: matchedOrder.actualAmount
     });
     queueCallback(ctx, matchedOrder);
   } else {
     logSystem(ctx, "warn", "notifications.unmatched", "到账通知未匹配订单", {
       accountId: account.id,
+      paymentChannel,
+      packageName,
       amount: formatMoney(amountCents)
     });
   }
@@ -1135,7 +1241,9 @@ function insertNotificationLog(
   input: {
     accountId: number;
     deviceId?: string;
-    channel?: string;
+    channel?: string | null;
+    paymentChannel: PaymentChannel | null;
+    packageName?: string;
     amountCents: number | null;
     rawText: string;
     matchedOrderId: string | null;
@@ -1145,14 +1253,16 @@ function insertNotificationLog(
 ) {
   ctx.db.query(`
     INSERT INTO payment_notifications(
-      account_id, device_id, channel, actual_amount_cents, raw_text,
+      account_id, device_id, channel, payment_channel, package_name, actual_amount_cents, raw_text,
       matched_order_id, status, received_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.accountId,
     input.deviceId ?? null,
     input.channel?.trim() || null,
+    input.paymentChannel,
+    input.packageName?.trim() || null,
     input.amountCents,
     input.rawText,
     input.matchedOrderId,
@@ -1248,6 +1358,7 @@ function callbackPayload(ctx: AppContext, order: Order) {
     merchantOrderId: order.merchantOrderId,
     accountCode: order.accountCode,
     status: "paid",
+    paymentChannel: order.paymentChannel,
     requestedAmount: order.requestedAmount,
     actualAmount: order.actualAmount,
     paidAt: order.paidAt
@@ -1453,6 +1564,7 @@ export function listAmountOccupations(
       actualAmount: formatMoney(row.actual_amount_cents) ?? "0.00",
       actualAmountCents: row.actual_amount_cents,
       requestedAmount: formatMoney(row.requested_amount_cents) ?? "0.00",
+      paymentChannel: row.payment_channel,
       status: row.status,
       expireAt: row.expire_at,
       payMode: row.pay_mode
@@ -1487,7 +1599,15 @@ export function dashboardStats(ctx: AppContext): DashboardStats {
     amountPool: {
       occupied: scalar(ctx, "SELECT COUNT(*) AS value FROM orders WHERE status = 'pending'"),
       presetQrCodes: scalar(ctx, "SELECT COUNT(*) AS value FROM preset_qr_codes"),
-      fallbackAccounts: scalar(ctx, "SELECT COUNT(*) AS value FROM accounts WHERE enabled = 1 AND fallback_pay_url IS NOT NULL AND fallback_pay_url != ''")
+      fallbackAccounts: scalar(ctx, `
+        SELECT COUNT(*) AS value
+        FROM accounts
+        WHERE enabled = 1
+          AND (
+            (fallback_pay_url IS NOT NULL AND fallback_pay_url != '')
+            OR (wechat_fallback_pay_url IS NOT NULL AND wechat_fallback_pay_url != '')
+          )
+      `)
     },
     callbacks: {
       pending: scalar(ctx, "SELECT COUNT(*) AS value FROM callback_logs WHERE status = 'pending'"),

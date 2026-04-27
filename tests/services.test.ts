@@ -1,33 +1,56 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
   closeAppContext,
-  createAccount,
   createAppContext,
   createDeviceEnrollment,
   createOrder,
+  createPaymentAccount,
   enrollAndroidDevice,
   handleAndroidNotification,
   listAmountOccupations,
   listNotificationLogs,
+  setPaymentAccountEnabled,
   signAndroidRequest,
   signPayload,
-  updateAccountSettings,
+  updatePaymentAccountSettings,
   upsertPresetQrCodes,
   verifyAndroidRequest,
   type AppContext
 } from "../server/services";
-import type { Device, EnrollDeviceResult } from "../src/shared/types";
+import type { Device, EnrollDeviceResult, PaymentAccount } from "../src/shared/types";
 import { getAdminPath, getAdminSessionState, isSetupRequired, loginAdmin, setupAdminPassword } from "../server/auth";
 import { parseMoney } from "../server/money";
 
 let ctx: AppContext;
+let alipayA: PaymentAccount;
+let alipayB: PaymentAccount;
+let wechatA: PaymentAccount;
 
 beforeEach(() => {
   ctx = createAppContext({ databaseUrl: ":memory:", runCallbacks: false });
-  updateAccountSettings(ctx, 1, {
+  alipayA = createPaymentAccount(ctx, {
+    code: "alipay-a",
+    name: "支付宝 A",
+    paymentChannel: "alipay",
+    priority: 10,
     maxOffsetCents: 10,
-    fallbackPayUrl: "https://pay.example/alipay-fallback",
-    wechatFallbackPayUrl: "https://pay.example/wechat-fallback"
+    fallbackPayUrl: "https://pay.example/alipay-a"
+  });
+  alipayB = createPaymentAccount(ctx, {
+    code: "alipay-b",
+    name: "支付宝 B",
+    paymentChannel: "alipay",
+    priority: 20,
+    maxOffsetCents: 10,
+    fallbackPayUrl: "https://pay.example/alipay-b"
+  });
+  wechatA = createPaymentAccount(ctx, {
+    code: "wechat-a",
+    name: "微信 A",
+    paymentChannel: "wechat",
+    priority: 10,
+    maxOffsetCents: 10,
+    fallbackPayUrl: "https://pay.example/wechat-a"
   });
 });
 
@@ -35,9 +58,9 @@ afterEach(() => {
   closeAppContext(ctx);
 });
 
-function enrollTestDevice(deviceId = "android-main"): EnrollDeviceResult {
+function enrollTestDevice(paymentAccountCode = "alipay-a", deviceId = "android-main"): EnrollDeviceResult {
   const enrollment = createDeviceEnrollment(ctx, {
-    accountCode: "default",
+    paymentAccountCode,
     name: "主收款机",
     ttlMinutes: 10
   });
@@ -49,133 +72,116 @@ function enrollTestDevice(deviceId = "android-main"): EnrollDeviceResult {
   });
 }
 
-test("creates orders by dynamically assigning offset amounts", () => {
-  upsertPresetQrCodes(ctx, {
-    accountCode: "default",
-    items: [{ amount: "10.00", payUrl: "https://pay.example/10.00" }]
-  });
-
+test("allocates same amount across payment accounts before offsetting", () => {
   const first = createOrder(ctx, {
-    accountCode: "default",
+    paymentChannel: "alipay",
     amount: "10.00",
     merchantOrderId: "m-10001",
     ttlMinutes: 10
   });
   const second = createOrder(ctx, {
-    accountCode: "default",
+    paymentChannel: "alipay",
     amount: "10.00",
     merchantOrderId: "m-10002",
     ttlMinutes: 10
   });
+  const third = createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "10.00",
+    merchantOrderId: "m-10003",
+    ttlMinutes: 10
+  });
 
-  expect(first.status).toBe("pending");
-  expect(first.paymentChannel).toBe("alipay");
+  expect(first.paymentAccountCode).toBe("alipay-a");
   expect(first.actualAmount).toBe("10.00");
-  expect(first.payMode).toBe("preset");
-  expect(first.amountInputRequired).toBe(false);
-  expect(first.payUrl).toBe("https://pay.example/10.00");
-  expect(second.actualAmount).toBe("10.01");
-  expect(second.payMode).toBe("fallback");
-  expect(second.amountInputRequired).toBe(true);
-
-  const occupied = listAmountOccupations(ctx).items;
-  expect(occupied).toHaveLength(2);
+  expect(second.paymentAccountCode).toBe("alipay-b");
+  expect(second.actualAmount).toBe("10.00");
+  expect(third.paymentAccountCode).toBe("alipay-a");
+  expect(third.actualAmount).toBe("10.01");
+  expect(listAmountOccupations(ctx).items).toHaveLength(3);
 });
 
-test("separates amount locks and preset qr codes by payment channel", () => {
+test("uses per-account preset qr codes and isolates payment channels", () => {
   upsertPresetQrCodes(ctx, {
-    accountCode: "default",
-    items: [
-      { paymentChannel: "alipay", amount: "12.00", payUrl: "https://pay.example/alipay/12.00" },
-      { paymentChannel: "wechat", amount: "12.00", payUrl: "https://pay.example/wechat/12.00" }
-    ]
+    paymentAccountCode: "alipay-a",
+    items: [{ amount: "12.00", payUrl: "https://pay.example/alipay-a/12.00" }]
+  });
+  upsertPresetQrCodes(ctx, {
+    paymentAccountCode: "wechat-a",
+    items: [{ amount: "12.00", payUrl: "https://pay.example/wechat-a/12.00" }]
   });
 
   const alipay = createOrder(ctx, {
-    accountCode: "default",
     paymentChannel: "alipay",
     amount: "12.00",
     merchantOrderId: "m-alipay",
     ttlMinutes: 10
   });
   const wechat = createOrder(ctx, {
-    accountCode: "default",
     paymentChannel: "wechat",
     amount: "12.00",
     merchantOrderId: "m-wechat",
     ttlMinutes: 10
   });
-  const nextAlipay = createOrder(ctx, {
-    accountCode: "default",
-    paymentChannel: "alipay",
-    amount: "12.00",
-    merchantOrderId: "m-alipay-next",
-    ttlMinutes: 10
-  });
 
-  expect(alipay.actualAmount).toBe("12.00");
-  expect(alipay.payUrl).toBe("https://pay.example/alipay/12.00");
-  expect(wechat.actualAmount).toBe("12.00");
-  expect(wechat.payUrl).toBe("https://pay.example/wechat/12.00");
-  expect(nextAlipay.actualAmount).toBe("12.01");
-
-  const occupied = listAmountOccupations(ctx).items;
-  expect(occupied).toHaveLength(3);
-  expect(occupied.map((item) => `${item.paymentChannel}:${item.actualAmount}`).sort()).toEqual([
-    "alipay:12.00",
-    "alipay:12.01",
-    "wechat:12.00"
-  ]);
+  expect(alipay.paymentAccountCode).toBe("alipay-a");
+  expect(alipay.payMode).toBe("preset");
+  expect(alipay.payUrl).toBe("https://pay.example/alipay-a/12.00");
+  expect(wechat.paymentAccountCode).toBe("wechat-a");
+  expect(wechat.payMode).toBe("preset");
+  expect(wechat.payUrl).toBe("https://pay.example/wechat-a/12.00");
 });
 
-test("uses channel-specific fallback pay urls", () => {
-  const alipay = createOrder(ctx, {
-    accountCode: "default",
+test("does not offset cent-level amounts but can use another account", () => {
+  const first = createOrder(ctx, {
     paymentChannel: "alipay",
-    amount: "13.00",
-    merchantOrderId: "fallback-alipay",
+    amount: "10.01",
+    merchantOrderId: "m-cent-1",
     ttlMinutes: 10
   });
-  const wechat = createOrder(ctx, {
-    accountCode: "default",
-    paymentChannel: "wechat",
-    amount: "13.00",
-    merchantOrderId: "fallback-wechat",
+  const second = createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "10.01",
+    merchantOrderId: "m-cent-2",
     ttlMinutes: 10
   });
 
-  expect(alipay.actualAmount).toBe("13.00");
-  expect(alipay.payUrl).toBe("https://pay.example/alipay-fallback");
-  expect(wechat.actualAmount).toBe("13.00");
-  expect(wechat.payUrl).toBe("https://pay.example/wechat-fallback");
+  expect(first.paymentAccountCode).toBe("alipay-a");
+  expect(first.actualAmount).toBe("10.01");
+  expect(second.paymentAccountCode).toBe("alipay-b");
+  expect(second.actualAmount).toBe("10.01");
+  expect(() => createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "10.01",
+    merchantOrderId: "m-cent-3",
+    ttlMinutes: 10
+  })).toThrow("最大偏移 0.00");
 });
 
-test("defaults account max offset to 10 cents", () => {
-  const account = createAccount(ctx, {
-    code: "store-a",
-    name: "门店 A"
+test("skips payment accounts without preset qr code or fallback url", () => {
+  updatePaymentAccountSettings(ctx, alipayA.id, { fallbackPayUrl: null });
+
+  const order = createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "13.00",
+    merchantOrderId: "skip-empty-account",
+    ttlMinutes: 10
+  });
+
+  expect(order.paymentAccountCode).toBe("alipay-b");
+  expect(order.payUrl).toBe("https://pay.example/alipay-b");
+});
+
+test("defaults payment account max offset to 10 cents", () => {
+  const account = createPaymentAccount(ctx, {
+    code: "wechat-b",
+    name: "微信 B",
+    paymentChannel: "wechat"
   });
 
   expect(account.maxOffsetCents).toBe(10);
   expect(account.maxOffset).toBe("0.10");
-});
-
-test("does not offset cent-level order amounts", () => {
-  const first = createOrder(ctx, {
-    accountCode: "default",
-    amount: "10.01",
-    merchantOrderId: "m-20001",
-    ttlMinutes: 10
-  });
-
-  expect(first.actualAmount).toBe("10.01");
-  expect(() => createOrder(ctx, {
-    accountCode: "default",
-    amount: "10.01",
-    merchantOrderId: "m-20002",
-    ttlMinutes: 10
-  })).toThrow("最大偏移 0.00");
-  expect(listAmountOccupations(ctx).items).toHaveLength(1);
+  expect(account.priority).toBe(100);
 });
 
 test("parses money into integer cents without floating point multiplication", () => {
@@ -185,36 +191,28 @@ test("parses money into integer cents without floating point multiplication", ()
   expect(() => parseMoney(1.005)).toThrow("最多两位小数");
 });
 
-test("matches an android payment notification and clears the occupation", () => {
-  const { device } = enrollTestDevice();
-  const order = createOrder(ctx, {
-    accountCode: "default",
-    amount: "10.00",
-    callbackUrl: "https://merchant.example/webhook"
+test("matches android payment notifications by package name across bound accounts", () => {
+  const firstEnroll = enrollTestDevice("alipay-a", "android-multi");
+  const secondEnrollment = createDeviceEnrollment(ctx, {
+    paymentAccountCode: "wechat-a",
+    name: "主收款机",
+    ttlMinutes: 10
   });
+  const secondEnroll = enrollAndroidDevice(ctx, {
+    enrollmentToken: secondEnrollment.token,
+    deviceId: "android-multi",
+    appVersion: "0.1.0"
+  });
+  const verifiedDevice = secondEnroll.device;
+  expect(firstEnroll.device.deviceId).toBe(verifiedDevice.deviceId);
+  expect(verifiedDevice.paymentAccounts.map((item) => item.code).sort()).toEqual(["alipay-a", "wechat-a"]);
 
-  const result = handleAndroidNotification(ctx, {
-    channel: "alipay",
-    actualAmount: order.actualAmount,
-    rawText: `支付宝到账 ${order.actualAmount} 元`
-  }, device);
-
-  expect(result.matched).toBe(true);
-  expect(result.order?.id).toBe(order.id);
-  expect(result.order?.status).toBe("paid");
-  expect(listAmountOccupations(ctx).items).toHaveLength(0);
-});
-
-test("matches android payment notifications by package name", () => {
-  const { device } = enrollTestDevice();
   const alipayOrder = createOrder(ctx, {
-    accountCode: "default",
     paymentChannel: "alipay",
     amount: "20.00",
     merchantOrderId: "pkg-alipay"
   });
   const wechatOrder = createOrder(ctx, {
-    accountCode: "default",
     paymentChannel: "wechat",
     amount: "20.00",
     merchantOrderId: "pkg-wechat"
@@ -224,21 +222,44 @@ test("matches android payment notifications by package name", () => {
     packageName: "com.tencent.mm",
     actualAmount: "20.00",
     rawText: "微信收款到账 20.00 元"
-  }, device);
+  }, verifiedDevice);
   const alipayResult = handleAndroidNotification(ctx, {
     packageName: "com.eg.android.AlipayGphone",
     actualAmount: "20.00",
     rawText: "支付宝到账 20.00 元"
-  }, device);
+  }, verifiedDevice);
 
   expect(wechatResult.matched).toBe(true);
   expect(wechatResult.order?.id).toBe(wechatOrder.id);
-  expect(wechatResult.order?.id).not.toBe(alipayOrder.id);
+  expect(wechatResult.log.paymentAccountCode).toBe("wechat-a");
   expect(wechatResult.log.paymentChannel).toBe("wechat");
-  expect(wechatResult.log.packageName).toBe("com.tencent.mm");
   expect(alipayResult.matched).toBe(true);
   expect(alipayResult.order?.id).toBe(alipayOrder.id);
+  expect(alipayResult.log.paymentAccountCode).toBe("alipay-a");
   expect(alipayResult.log.paymentChannel).toBe("alipay");
+  expect(listAmountOccupations(ctx).items).toHaveLength(0);
+});
+
+test("does not match orders for payment accounts not bound to the android device", () => {
+  setPaymentAccountEnabled(ctx, alipayA.id, false);
+  const order = createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "21.00",
+    merchantOrderId: "unbound-account"
+  });
+  setPaymentAccountEnabled(ctx, alipayA.id, true);
+  const { device } = enrollTestDevice("alipay-a", "android-limited");
+
+  const result = handleAndroidNotification(ctx, {
+    packageName: "com.eg.android.AlipayGphone",
+    actualAmount: "21.00",
+    rawText: "支付宝到账 21.00 元"
+  }, device);
+
+  expect(order.paymentAccountCode).toBe("alipay-b");
+  expect(result.matched).toBe(false);
+  expect(result.order).toBeNull();
+  expect(result.log.status).toBe("unmatched");
 });
 
 test("records parse failures for unstructured notifications", () => {
@@ -254,7 +275,7 @@ test("records parse failures for unstructured notifications", () => {
 
 test("consumes device enrollment tokens once", () => {
   const enrollment = createDeviceEnrollment(ctx, {
-    accountCode: "default",
+    paymentAccountCode: "alipay-a",
     name: "备用收款机",
     ttlMinutes: 10
   });
@@ -298,6 +319,7 @@ test("verifies signed android requests and rejects replayed nonce", () => {
   const verified = verifyAndroidRequest(ctx, request, bodyText) as Device;
   expect(verified.deviceId).toBe(device.deviceId);
   expect(verified.online).toBe(true);
+  expect(verified.paymentAccounts.map((item) => item.code)).toEqual(["alipay-a"]);
   expect(verified.lastSeenAt).toBeTruthy();
   expect(() => verifyAndroidRequest(ctx, request, bodyText)).toThrow("nonce");
 });

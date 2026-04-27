@@ -39,7 +39,6 @@ import {
   WalletOutlined
 } from "@ant-design/icons";
 import type {
-  Account,
   AmountOccupation,
   CallbackLog,
   Device,
@@ -47,25 +46,26 @@ import type {
   NotificationLog,
   Order,
   OrderStatus,
+  PaymentAccount,
   PaymentChannel,
   PresetQrCode,
   SystemLog
 } from "../shared/types";
 import { DEFAULT_MAX_OFFSET_CENTS, DEFAULT_PAYMENT_CHANNEL, PAYMENT_CHANNEL_LABELS, PAYMENT_CHANNEL_OPTIONS } from "../shared/constants";
 import {
-  createAccount,
   createDeviceEnrollment,
+  createPaymentAccount,
   deleteQrCode,
   getAdminSession,
   loadSnapshot,
   loginAdmin,
   logoutAdmin,
   retryCallback,
-  setAccountEnabled,
   setDeviceEnabled,
+  setPaymentAccountEnabled,
   setupAdmin,
-  updateAccountSettings,
   updateOrderStatus,
+  updatePaymentAccountSettings,
   upsertQrCodes,
   type AdminSessionState,
   type Snapshot
@@ -85,7 +85,7 @@ const emptySnapshot: Snapshot = {
     amountPool: { occupied: 0, presetQrCodes: 0, fallbackAccounts: 0 },
     callbacks: { pending: 0, failed: 0 }
   },
-  accounts: [],
+  paymentAccounts: [],
   orders: { items: [], total: 0, limit: 80, offset: 0 },
   occupations: { items: [], total: 0, limit: 160, offset: 0 },
   qrCodes: { items: [], total: 0, limit: 160, offset: 0 },
@@ -98,7 +98,7 @@ const emptySnapshot: Snapshot = {
 const menuItems: MenuProps["items"] = [
   { key: "dashboard", icon: <AppstoreOutlined />, label: "仪表盘" },
   { key: "orders", icon: <WalletOutlined />, label: "订单管理" },
-  { key: "accounts", icon: <ApiOutlined />, label: "账户设备" },
+  { key: "accounts", icon: <ApiOutlined />, label: "收款账号" },
   { key: "payments", icon: <DatabaseOutlined />, label: "收款码" },
   { key: "logs", icon: <FileSearchOutlined />, label: "日志中心" },
   { key: "callbacks", icon: <CloudSyncOutlined />, label: "回调管理" }
@@ -107,7 +107,7 @@ const menuItems: MenuProps["items"] = [
 const viewTitles: Record<ViewKey, string> = {
   dashboard: "仪表盘",
   orders: "订单管理",
-  accounts: "账户设备",
+  accounts: "收款账号",
   payments: "收款码",
   logs: "日志中心",
   callbacks: "回调管理"
@@ -268,22 +268,22 @@ export function AdminApp() {
 }
 
 interface ModalProps {
-  accounts: Account[];
+  paymentAccounts: PaymentAccount[];
   open: boolean;
   onCancel: () => void;
   onRefresh: () => void;
 }
 
-function QrCodeModal({ accounts, open, onCancel, onRefresh }: ModalProps) {
+function QrCodeModal({ paymentAccounts, open, onCancel, onRefresh }: ModalProps) {
   const [form] = Form.useForm();
   const { message } = AntApp.useApp();
   const [saving, setSaving] = useState(false);
-  const accountOptions = useMemo(() => accounts.map((account) => ({
-    label: `${account.name} (${account.code})`,
+  const paymentAccountOptions = useMemo(() => paymentAccounts.map((account) => ({
+    label: `${PAYMENT_CHANNEL_LABELS[account.paymentChannel]} · ${account.name} (${account.code})`,
     value: account.code
-  })), [accounts]);
+  })), [paymentAccounts]);
 
-  const handleFinish = useCallback(async (values: { accountCode: string; paymentChannel: PaymentChannel; lines: string }) => {
+  const handleFinish = useCallback(async (values: { paymentAccountCode: string; lines: string }) => {
     const items = normalizeQrLines(values.lines);
     if (items.some((item) => !item.amount || !item.payUrl)) {
       message.error("二维码配置格式无效");
@@ -292,7 +292,7 @@ function QrCodeModal({ accounts, open, onCancel, onRefresh }: ModalProps) {
 
     setSaving(true);
     try {
-      const result = await upsertQrCodes({ accountCode: values.accountCode, paymentChannel: values.paymentChannel, items });
+      const result = await upsertQrCodes({ paymentAccountCode: values.paymentAccountCode, items });
       message.success(`已保存 ${result.saved} 条二维码`);
       form.resetFields();
       onCancel();
@@ -306,12 +306,9 @@ function QrCodeModal({ accounts, open, onCancel, onRefresh }: ModalProps) {
 
   return (
     <Modal title="导入定额二维码" open={open} confirmLoading={saving} destroyOnHidden okText="保存" cancelText="取消" onOk={form.submit} onCancel={onCancel}>
-      <Form form={form} layout="vertical" initialValues={{ paymentChannel: DEFAULT_PAYMENT_CHANNEL }} onFinish={handleFinish}>
-        <Form.Item name="accountCode" label="账户" rules={[{ required: true, message: "请选择账户" }]}>
-          <Select options={accountOptions} placeholder="选择账户" />
-        </Form.Item>
-        <Form.Item name="paymentChannel" label="付款方式" rules={[{ required: true, message: "请选择付款方式" }]}>
-          <Select options={paymentChannelOptions} />
+      <Form form={form} layout="vertical" onFinish={handleFinish}>
+        <Form.Item name="paymentAccountCode" label="收款账号" rules={[{ required: true, message: "请选择收款账号" }]}>
+          <Select options={paymentAccountOptions} placeholder="选择收款账号" />
         </Form.Item>
         <Form.Item name="lines" label="二维码" rules={[{ required: true, message: "请输入二维码配置" }]}>
           <TextArea rows={10} placeholder={"10.00 https://pay.example/10.00\n10.01 https://pay.example/10.01"} />
@@ -321,15 +318,15 @@ function QrCodeModal({ accounts, open, onCancel, onRefresh }: ModalProps) {
   );
 }
 
-function DeviceEnrollmentModal({ accounts, open, onCancel, onRefresh }: ModalProps) {
+function DeviceEnrollmentModal({ paymentAccounts, open, onCancel, onRefresh }: ModalProps) {
   const [form] = Form.useForm();
   const { message } = AntApp.useApp();
   const [saving, setSaving] = useState(false);
   const [enrollment, setEnrollment] = useState<DeviceEnrollment | null>(null);
-  const accountOptions = useMemo(() => accounts.map((account) => ({
-    label: `${account.name} (${account.code})`,
+  const paymentAccountOptions = useMemo(() => paymentAccounts.map((account) => ({
+    label: `${PAYMENT_CHANNEL_LABELS[account.paymentChannel]} · ${account.name} (${account.code})`,
     value: account.code
-  })), [accounts]);
+  })), [paymentAccounts]);
 
   useEffect(() => {
     if (!open) {
@@ -338,7 +335,7 @@ function DeviceEnrollmentModal({ accounts, open, onCancel, onRefresh }: ModalPro
     }
   }, [form, open]);
 
-  const handleFinish = useCallback(async (values: { accountCode: string; name?: string; ttlMinutes: number }) => {
+  const handleFinish = useCallback(async (values: { paymentAccountCode: string; name?: string; ttlMinutes: number }) => {
     setSaving(true);
     try {
       const result = await createDeviceEnrollment(values);
@@ -365,8 +362,8 @@ function DeviceEnrollmentModal({ accounts, open, onCancel, onRefresh }: ModalPro
       width={680}
     >
       <Form form={form} layout="vertical" initialValues={{ ttlMinutes: 30 }} onFinish={handleFinish}>
-        <Form.Item name="accountCode" label="账户" rules={[{ required: true, message: "请选择账户" }]}>
-          <Select options={accountOptions} placeholder="选择账户" />
+        <Form.Item name="paymentAccountCode" label="收款账号" rules={[{ required: true, message: "请选择收款账号" }]}>
+          <Select options={paymentAccountOptions} placeholder="选择收款账号" />
         </Form.Item>
         <Form.Item name="name" label="设备备注">
           <Input allowClear />
@@ -389,46 +386,48 @@ function DeviceEnrollmentModal({ accounts, open, onCancel, onRefresh }: ModalPro
   );
 }
 
-function AccountModal({ open, onCancel, onRefresh }: Omit<ModalProps, "accounts">) {
+function PaymentAccountModal({ open, onCancel, onRefresh }: Omit<ModalProps, "paymentAccounts">) {
   const [form] = Form.useForm();
   const { message } = AntApp.useApp();
   const [saving, setSaving] = useState(false);
 
-  const handleFinish = useCallback(async (values: { code: string; name: string; maxOffsetCents: number; alipayFallbackPayUrl?: string; wechatFallbackPayUrl?: string }) => {
+  const handleFinish = useCallback(async (values: { code: string; name: string; paymentChannel: PaymentChannel; priority: number; maxOffsetCents: number; fallbackPayUrl?: string }) => {
     setSaving(true);
     try {
-      await createAccount({
+      await createPaymentAccount({
         ...values,
-        alipayFallbackPayUrl: values.alipayFallbackPayUrl || null,
-        wechatFallbackPayUrl: values.wechatFallbackPayUrl || null
+        fallbackPayUrl: values.fallbackPayUrl || null
       });
-      message.success("账户已创建");
+      message.success("收款账号已创建");
       form.resetFields();
       onCancel();
       onRefresh();
     } catch (error) {
-      message.error(error instanceof Error ? error.message : "账户创建失败");
+      message.error(error instanceof Error ? error.message : "收款账号创建失败");
     } finally {
       setSaving(false);
     }
   }, [form, message, onCancel, onRefresh]);
 
   return (
-    <Modal title="创建账户" open={open} confirmLoading={saving} destroyOnHidden okText="创建" cancelText="取消" onOk={form.submit} onCancel={onCancel}>
-      <Form form={form} layout="vertical" initialValues={{ maxOffsetCents: DEFAULT_MAX_OFFSET_CENTS }} onFinish={handleFinish}>
+    <Modal title="创建收款账号" open={open} confirmLoading={saving} destroyOnHidden okText="创建" cancelText="取消" onOk={form.submit} onCancel={onCancel}>
+      <Form form={form} layout="vertical" initialValues={{ paymentChannel: DEFAULT_PAYMENT_CHANNEL, priority: 100, maxOffsetCents: DEFAULT_MAX_OFFSET_CENTS }} onFinish={handleFinish}>
         <Form.Item name="code" label="编码" rules={[{ required: true, message: "请输入编码" }]}>
           <Input allowClear />
         </Form.Item>
         <Form.Item name="name" label="名称" rules={[{ required: true, message: "请输入名称" }]}>
           <Input allowClear />
         </Form.Item>
+        <Form.Item name="paymentChannel" label="付款方式" rules={[{ required: true, message: "请选择付款方式" }]}>
+          <Select options={paymentChannelOptions} />
+        </Form.Item>
+        <Form.Item name="priority" label="优先级" rules={[{ required: true, message: "请输入优先级" }]}>
+          <InputNumber min={0} max={999999} precision={0} className="full-width" />
+        </Form.Item>
         <Form.Item name="maxOffsetCents" label="最大偏移分" rules={[{ required: true, message: "请输入最大偏移" }]}>
           <InputNumber min={0} max={9999} precision={0} className="full-width" />
         </Form.Item>
-        <Form.Item name="alipayFallbackPayUrl" label="支付宝兜底收款码 URL">
-          <Input allowClear />
-        </Form.Item>
-        <Form.Item name="wechatFallbackPayUrl" label="微信兜底收款码 URL">
+        <Form.Item name="fallbackPayUrl" label="兜底收款码 URL">
           <Input allowClear />
         </Form.Item>
       </Form>
@@ -436,14 +435,14 @@ function AccountModal({ open, onCancel, onRefresh }: Omit<ModalProps, "accounts"
   );
 }
 
-interface AccountSettingsModalProps {
-  account: Account | null;
+interface PaymentAccountSettingsModalProps {
+  account: PaymentAccount | null;
   open: boolean;
   onCancel: () => void;
   onRefresh: () => void;
 }
 
-function AccountSettingsModal({ account, open, onCancel, onRefresh }: AccountSettingsModalProps) {
+function PaymentAccountSettingsModal({ account, open, onCancel, onRefresh }: PaymentAccountSettingsModalProps) {
   const [form] = Form.useForm();
   const { message } = AntApp.useApp();
   const [saving, setSaving] = useState(false);
@@ -451,44 +450,55 @@ function AccountSettingsModal({ account, open, onCancel, onRefresh }: AccountSet
   useEffect(() => {
     if (account && open) {
       form.setFieldsValue({
+        code: account.code,
+        name: account.name,
+        paymentChannel: account.paymentChannel,
+        priority: account.priority,
         maxOffsetCents: account.maxOffsetCents,
-        alipayFallbackPayUrl: account.alipayFallbackPayUrl,
-        wechatFallbackPayUrl: account.wechatFallbackPayUrl
+        fallbackPayUrl: account.fallbackPayUrl
       });
     }
   }, [account, form, open]);
 
-  const handleFinish = useCallback(async (values: { maxOffsetCents: number; alipayFallbackPayUrl?: string; wechatFallbackPayUrl?: string }) => {
+  const handleFinish = useCallback(async (values: { code: string; name: string; paymentChannel: PaymentChannel; priority: number; maxOffsetCents: number; fallbackPayUrl?: string }) => {
     if (!account) {
       return;
     }
     setSaving(true);
     try {
-      await updateAccountSettings(account.id, {
-        maxOffsetCents: values.maxOffsetCents,
-        alipayFallbackPayUrl: values.alipayFallbackPayUrl || null,
-        wechatFallbackPayUrl: values.wechatFallbackPayUrl || null
+      await updatePaymentAccountSettings(account.id, {
+        ...values,
+        fallbackPayUrl: values.fallbackPayUrl || null
       });
-      message.success("账户配置已更新");
+      message.success("收款账号配置已更新");
       onCancel();
       onRefresh();
     } catch (error) {
-      message.error(error instanceof Error ? error.message : "账户配置更新失败");
+      message.error(error instanceof Error ? error.message : "收款账号配置更新失败");
     } finally {
       setSaving(false);
     }
   }, [account, message, onCancel, onRefresh]);
 
   return (
-    <Modal title="收款配置" open={open} confirmLoading={saving} destroyOnHidden okText="保存" cancelText="取消" onOk={form.submit} onCancel={onCancel}>
+    <Modal title="收款账号配置" open={open} confirmLoading={saving} destroyOnHidden okText="保存" cancelText="取消" onOk={form.submit} onCancel={onCancel}>
       <Form form={form} layout="vertical" onFinish={handleFinish}>
+        <Form.Item name="code" label="编码" rules={[{ required: true, message: "请输入编码" }]}>
+          <Input allowClear />
+        </Form.Item>
+        <Form.Item name="name" label="名称" rules={[{ required: true, message: "请输入名称" }]}>
+          <Input allowClear />
+        </Form.Item>
+        <Form.Item name="paymentChannel" label="付款方式" rules={[{ required: true, message: "请选择付款方式" }]}>
+          <Select options={paymentChannelOptions} />
+        </Form.Item>
+        <Form.Item name="priority" label="优先级" rules={[{ required: true, message: "请输入优先级" }]}>
+          <InputNumber min={0} max={999999} precision={0} className="full-width" />
+        </Form.Item>
         <Form.Item name="maxOffsetCents" label="最大偏移分" rules={[{ required: true, message: "请输入最大偏移" }]}>
           <InputNumber min={0} max={9999} precision={0} className="full-width" />
         </Form.Item>
-        <Form.Item name="alipayFallbackPayUrl" label="支付宝兜底收款码 URL">
-          <Input allowClear />
-        </Form.Item>
-        <Form.Item name="wechatFallbackPayUrl" label="微信兜底收款码 URL">
+        <Form.Item name="fallbackPayUrl" label="兜底收款码 URL">
           <Input allowClear />
         </Form.Item>
       </Form>
@@ -515,7 +525,7 @@ function DashboardView({ snapshot }: { snapshot: Snapshot }) {
         </div>
         <div className={metricClass("red")}>
           <Statistic title="在线设备" value={stats.devices.online} prefix={<BellOutlined />} />
-          <Text type="secondary">兜底账户 {stats.amountPool.fallbackAccounts}</Text>
+          <Text type="secondary">兜底码 {stats.amountPool.fallbackAccounts}</Text>
         </div>
       </section>
       <section className="panel">
@@ -529,7 +539,7 @@ function DashboardView({ snapshot }: { snapshot: Snapshot }) {
           dataSource={snapshot.orders.items.slice(0, 8)}
           columns={[
             { title: "订单号", dataIndex: "id", ellipsis: true },
-            { title: "账户", dataIndex: "accountCode", width: 110 },
+            { title: "收款账号", dataIndex: "paymentAccountCode", width: 120 },
             { title: "实付金额", dataIndex: "actualAmount", width: 110 },
             { title: "方式", dataIndex: "paymentChannel", width: 90, render: (value) => <PaymentChannelTag value={value} /> },
             { title: "付款", dataIndex: "payMode", width: 110, render: (value) => <StatusTag value={String(value)} /> },
@@ -550,8 +560,8 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
   const [isPending, startTransition] = useTransition();
   const [qrOpen, setQrOpen] = useState(false);
   const [deviceEnrollOpen, setDeviceEnrollOpen] = useState(false);
-  const [accountOpen, setAccountOpen] = useState(false);
-  const [settingsAccount, setSettingsAccount] = useState<Account | null>(null);
+  const [paymentAccountOpen, setPaymentAccountOpen] = useState(false);
+  const [settingsPaymentAccount, setSettingsPaymentAccount] = useState<PaymentAccount | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -606,12 +616,12 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     }
   }, [message, refresh]);
 
-  const handleAccountToggle = useCallback(async (id: number, enabled: boolean) => {
+  const handlePaymentAccountToggle = useCallback(async (id: number, enabled: boolean) => {
     try {
-      await setAccountEnabled(id, enabled);
+      await setPaymentAccountEnabled(id, enabled);
       refresh();
     } catch (error) {
-      message.error(error instanceof Error ? error.message : "账户状态更新失败");
+      message.error(error instanceof Error ? error.message : "收款账号状态更新失败");
     }
   }, [message, refresh]);
 
@@ -627,7 +637,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
   const orderColumns = useMemo<Columns<Order>>(() => [
     { title: "订单号", dataIndex: "id", width: 220, ellipsis: true },
     { title: "商户单号", dataIndex: "merchantOrderId", width: 160, ellipsis: true, render: (value) => value || "-" },
-    { title: "账户", dataIndex: "accountCode", width: 110 },
+    { title: "收款账号", dataIndex: "paymentAccountCode", width: 120, render: (value) => value || "-" },
     { title: "方式", dataIndex: "paymentChannel", width: 90, render: (value) => <PaymentChannelTag value={value} /> },
     { title: "订单金额", dataIndex: "requestedAmount", width: 110 },
     { title: "实付金额", dataIndex: "actualAmount", width: 110 },
@@ -655,7 +665,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
 
   const occupationColumns = useMemo<Columns<AmountOccupation>>(() => [
     { title: "订单号", dataIndex: "orderId", width: 220, ellipsis: true },
-    { title: "账户", dataIndex: "accountCode", width: 110 },
+    { title: "收款账号", dataIndex: "paymentAccountCode", width: 120, render: (value) => value || "-" },
     { title: "方式", dataIndex: "paymentChannel", width: 90, render: (value) => <PaymentChannelTag value={value} /> },
     { title: "订单金额", dataIndex: "requestedAmount", width: 110 },
     { title: "占用金额", dataIndex: "actualAmount", width: 110 },
@@ -664,7 +674,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
   ], []);
 
   const qrColumns = useMemo<Columns<PresetQrCode>>(() => [
-    { title: "账户", dataIndex: "accountCode", width: 110 },
+    { title: "收款账号", dataIndex: "paymentAccountCode", width: 120, render: (value) => value || "-" },
     { title: "方式", dataIndex: "paymentChannel", width: 90, render: (value) => <PaymentChannelTag value={value} /> },
     { title: "金额", dataIndex: "amount", width: 110 },
     { title: "付款 URL", dataIndex: "payUrl", ellipsis: true },
@@ -682,12 +692,13 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     }
   ], [handleDeleteQr]);
 
-  const accountColumns = useMemo<Columns<Account>>(() => [
+  const paymentAccountColumns = useMemo<Columns<PaymentAccount>>(() => [
     { title: "编码", dataIndex: "code", width: 140 },
     { title: "名称", dataIndex: "name" },
+    { title: "方式", dataIndex: "paymentChannel", width: 90, render: (value) => <PaymentChannelTag value={value} /> },
+    { title: "优先级", dataIndex: "priority", width: 90 },
     { title: "最大偏移", dataIndex: "maxOffsetCents", width: 110, render: (value) => `${value} 分` },
-    { title: "支付宝兜底", dataIndex: "alipayFallbackPayUrl", width: 110, render: (value) => value ? <Tag color="success">已配置</Tag> : <Tag>未配置</Tag> },
-    { title: "微信兜底", dataIndex: "wechatFallbackPayUrl", width: 100, render: (value) => value ? <Tag color="success">已配置</Tag> : <Tag>未配置</Tag> },
+    { title: "兜底码", dataIndex: "fallbackPayUrl", width: 100, render: (value) => value ? <Tag color="success">已配置</Tag> : <Tag>未配置</Tag> },
     { title: "状态", dataIndex: "enabled", width: 100, render: (value) => value ? <Tag color="success">启用</Tag> : <Tag color="default">停用</Tag> },
     {
       title: "操作",
@@ -695,19 +706,26 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
       width: 130,
       render: (_, record) => (
         <Space size="small">
-          <Switch checked={record.enabled} onChange={(checked) => handleAccountToggle(record.id, checked)} />
+          <Switch checked={record.enabled} onChange={(checked) => handlePaymentAccountToggle(record.id, checked)} />
           <Tooltip title="配置">
-            <Button size="small" icon={<SettingOutlined />} onClick={() => setSettingsAccount(record)} />
+            <Button size="small" icon={<SettingOutlined />} onClick={() => setSettingsPaymentAccount(record)} />
           </Tooltip>
         </Space>
       )
     }
-  ], [handleAccountToggle]);
+  ], [handlePaymentAccountToggle]);
 
   const deviceColumns = useMemo<Columns<Device>>(() => [
     { title: "设备 ID", dataIndex: "deviceId", width: 180, ellipsis: true },
     { title: "备注", dataIndex: "name", width: 140, ellipsis: true, render: (value) => value || "-" },
-    { title: "账户", dataIndex: "accountCode", width: 110, render: (value) => value || "-" },
+    {
+      title: "绑定账号",
+      dataIndex: "paymentAccounts",
+      width: 240,
+      render: (value: Device["paymentAccounts"]) => value.length
+        ? <Space size={[4, 4]} wrap>{value.map((account) => <Tag key={account.id}>{PAYMENT_CHANNEL_LABELS[account.paymentChannel]} · {account.code}</Tag>)}</Space>
+        : "-"
+    },
     { title: "在线", dataIndex: "online", width: 90, render: (value) => value ? <Tag color="success">在线</Tag> : <Tag>离线</Tag> },
     { title: "版本", dataIndex: "appVersion", width: 110, render: (value) => value || "-" },
     { title: "配对时间", dataIndex: "pairedAt", width: 190, render: formatDate },
@@ -717,7 +735,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
 
   const notificationColumns = useMemo<Columns<NotificationLog>>(() => [
     { title: "时间", dataIndex: "receivedAt", width: 190, render: formatDate },
-    { title: "账户", dataIndex: "accountCode", width: 110 },
+    { title: "收款账号", dataIndex: "paymentAccountCode", width: 120, render: (value) => value || "-" },
     { title: "设备", dataIndex: "deviceId", width: 160, ellipsis: true, render: (value) => value || "-" },
     { title: "方式", dataIndex: "paymentChannel", width: 90, render: (value) => <PaymentChannelTag value={value} /> },
     { title: "包名", dataIndex: "packageName", width: 190, ellipsis: true, render: (value) => value || "-" },
@@ -752,7 +770,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     <Space wrap>
       <Button type="primary" icon={<MobileOutlined />} onClick={() => setDeviceEnrollOpen(true)}>设备配对</Button>
       <Button icon={<DatabaseOutlined />} onClick={() => setQrOpen(true)}>二维码</Button>
-      <Button icon={<ApiOutlined />} onClick={() => setAccountOpen(true)}>账户</Button>
+      <Button icon={<ApiOutlined />} onClick={() => setPaymentAccountOpen(true)}>收款账号</Button>
       <Tooltip title="刷新">
         <Button icon={<ReloadOutlined />} loading={loading || isPending} onClick={refresh} />
       </Tooltip>
@@ -777,7 +795,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
       return (
         <section className="panel">
           <Tabs items={[
-            { key: "accounts", label: "账户", children: <Table<Account> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.accounts} columns={accountColumns} pagination={false} /> },
+            { key: "accounts", label: "收款账号", children: <Table<PaymentAccount> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.paymentAccounts} columns={paymentAccountColumns} pagination={false} /> },
             { key: "devices", label: "设备", children: <Table<Device> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.devices} columns={deviceColumns} scroll={{ x: 1100 }} pagination={false} /> }
           ]} />
         </section>
@@ -809,7 +827,6 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
       </section>
     );
   }, [
-    accountColumns,
     activeView,
     callbackColumns,
     deviceColumns,
@@ -818,6 +835,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     notificationColumns,
     occupationColumns,
     orderColumns,
+    paymentAccountColumns,
     qrColumns,
     snapshot,
     systemLogColumns
@@ -845,10 +863,10 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
         </Header>
         <Content className="app-content">{content}</Content>
       </Layout>
-      <QrCodeModal accounts={snapshot.accounts} open={qrOpen} onCancel={() => setQrOpen(false)} onRefresh={refresh} />
-      <DeviceEnrollmentModal accounts={snapshot.accounts} open={deviceEnrollOpen} onCancel={() => setDeviceEnrollOpen(false)} onRefresh={refresh} />
-      <AccountModal open={accountOpen} onCancel={() => setAccountOpen(false)} onRefresh={refresh} />
-      <AccountSettingsModal account={settingsAccount} open={Boolean(settingsAccount)} onCancel={() => setSettingsAccount(null)} onRefresh={refresh} />
+      <QrCodeModal paymentAccounts={snapshot.paymentAccounts} open={qrOpen} onCancel={() => setQrOpen(false)} onRefresh={refresh} />
+      <DeviceEnrollmentModal paymentAccounts={snapshot.paymentAccounts} open={deviceEnrollOpen} onCancel={() => setDeviceEnrollOpen(false)} onRefresh={refresh} />
+      <PaymentAccountModal open={paymentAccountOpen} onCancel={() => setPaymentAccountOpen(false)} onRefresh={refresh} />
+      <PaymentAccountSettingsModal account={settingsPaymentAccount} open={Boolean(settingsPaymentAccount)} onCancel={() => setSettingsPaymentAccount(null)} onRefresh={refresh} />
     </Layout>
   );
 }

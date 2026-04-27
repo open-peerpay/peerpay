@@ -4,7 +4,6 @@ import { createDatabase } from "./db";
 import { extractMoneyFromText, formatMoney, parseMoney } from "./money";
 import { DEFAULT_MAX_OFFSET_CENTS, DEFAULT_PAYMENT_CHANNEL } from "../src/shared/constants";
 import type {
-  Account,
   AndroidNotificationInput,
   AmountOccupation,
   BulkPresetQrCodeInput,
@@ -12,9 +11,11 @@ import type {
   CallbackStatus,
   CreateDeviceEnrollmentInput,
   CreateOrderInput,
+  CreatePaymentAccountInput,
   DashboardStats,
   Device,
   DeviceEnrollment,
+  DevicePaymentAccount,
   EnrollDeviceInput,
   EnrollDeviceResult,
   HeartbeatInput,
@@ -25,9 +26,11 @@ import type {
   OrderStatus,
   Page,
   PayMode,
+  PaymentAccount,
   PaymentChannel,
   PresetQrCode,
-  SystemLog
+  SystemLog,
+  UpdatePaymentAccountInput
 } from "../src/shared/types";
 
 const DEFAULT_ORDER_TTL_MINUTES = 15;
@@ -47,21 +50,23 @@ const PAYMENT_CHANNEL_ALIASES: Record<string, PaymentChannel> = {
 
 type RowBool = 0 | 1;
 
-interface AccountRow {
+interface PaymentAccountRow {
   id: number;
   code: string;
   name: string;
+  payment_channel: PaymentChannel;
+  priority: number;
   enabled: RowBool;
   max_offset_cents: number;
   fallback_pay_url: string | null;
-  wechat_fallback_pay_url: string | null;
   created_at: string;
 }
 
 interface PresetQrCodeRow {
   id: number;
-  account_id: number;
-  account_code: string;
+  payment_account_id: number;
+  payment_account_code: string;
+  payment_account_name: string;
   payment_channel: PaymentChannel;
   amount_cents: number;
   pay_url: string;
@@ -72,11 +77,12 @@ interface PresetQrCodeRow {
 interface OrderRow {
   id: string;
   merchant_order_id: string | null;
-  account_id: number;
-  account_code: string;
+  payment_account_id: number;
+  payment_account_code: string;
+  payment_account_name: string;
+  payment_channel: PaymentChannel;
   requested_amount_cents: number;
   actual_amount_cents: number;
-  payment_channel: PaymentChannel;
   pay_url: string;
   pay_mode: PayMode;
   amount_input_required: RowBool;
@@ -94,8 +100,6 @@ interface DeviceRow {
   id: number;
   device_id: string;
   name: string | null;
-  account_id: number | null;
-  account_code: string | null;
   device_secret: string | null;
   enabled: RowBool;
   paired_at: string | null;
@@ -108,8 +112,10 @@ interface DeviceRow {
 
 interface DeviceEnrollmentRow {
   id: number;
-  account_id: number;
-  account_code: string;
+  payment_account_id: number;
+  payment_account_code: string;
+  payment_account_name: string;
+  payment_channel: PaymentChannel;
   name: string | null;
   token_hash: string;
   expires_at: string;
@@ -119,11 +125,12 @@ interface DeviceEnrollmentRow {
 
 interface NotificationRow {
   id: number;
-  account_id: number;
-  account_code: string;
+  payment_account_id: number | null;
+  payment_account_code: string | null;
+  payment_account_name: string | null;
+  payment_channel: PaymentChannel | null;
   device_id: string | null;
   channel: string | null;
-  payment_channel: PaymentChannel | null;
   package_name: string | null;
   actual_amount_cents: number | null;
   raw_text: string;
@@ -206,17 +213,17 @@ function scalar(ctx: AppContext, sql: string, ...params: SQLQueryBindings[]) {
   return row?.value ?? 0;
 }
 
-function mapAccount(row: AccountRow): Account {
+function mapPaymentAccount(row: PaymentAccountRow): PaymentAccount {
   return {
     id: row.id,
     code: row.code,
     name: row.name,
+    paymentChannel: row.payment_channel,
+    priority: row.priority,
     enabled: row.enabled === 1,
     maxOffsetCents: row.max_offset_cents,
     maxOffset: formatMoney(row.max_offset_cents) ?? "0.00",
     fallbackPayUrl: row.fallback_pay_url,
-    alipayFallbackPayUrl: row.fallback_pay_url,
-    wechatFallbackPayUrl: row.wechat_fallback_pay_url,
     createdAt: row.created_at
   };
 }
@@ -224,8 +231,9 @@ function mapAccount(row: AccountRow): Account {
 function mapPresetQrCode(row: PresetQrCodeRow): PresetQrCode {
   return {
     id: row.id,
-    accountId: row.account_id,
-    accountCode: row.account_code,
+    paymentAccountId: row.payment_account_id,
+    paymentAccountCode: row.payment_account_code,
+    paymentAccountName: row.payment_account_name,
     paymentChannel: row.payment_channel,
     amount: formatMoney(row.amount_cents) ?? "0.00",
     amountCents: row.amount_cents,
@@ -239,13 +247,14 @@ function mapOrder(row: OrderRow): Order {
   return {
     id: row.id,
     merchantOrderId: row.merchant_order_id,
-    accountId: row.account_id,
-    accountCode: row.account_code,
+    paymentAccountId: row.payment_account_id,
+    paymentAccountCode: row.payment_account_code,
+    paymentAccountName: row.payment_account_name,
+    paymentChannel: row.payment_channel,
     requestedAmount: formatMoney(row.requested_amount_cents) ?? "0.00",
     requestedAmountCents: row.requested_amount_cents,
     actualAmount: formatMoney(row.actual_amount_cents) ?? "0.00",
     actualAmountCents: row.actual_amount_cents,
-    paymentChannel: row.payment_channel,
     payUrl: row.pay_url,
     payMode: row.pay_mode,
     amountInputRequired: row.amount_input_required === 1,
@@ -260,7 +269,16 @@ function mapOrder(row: OrderRow): Order {
   };
 }
 
-function mapDevice(row: DeviceRow): Device {
+function mapDevicePaymentAccount(row: PaymentAccountRow): DevicePaymentAccount {
+  return {
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    paymentChannel: row.payment_channel
+  };
+}
+
+function mapDevice(ctx: AppContext, row: DeviceRow): Device {
   const threshold = Date.now() - DEVICE_ONLINE_WINDOW_MS;
   const lastSeen = row.last_seen_at ? Date.parse(row.last_seen_at) : 0;
 
@@ -268,8 +286,7 @@ function mapDevice(row: DeviceRow): Device {
     id: row.id,
     deviceId: row.device_id,
     name: row.name,
-    accountId: row.account_id,
-    accountCode: row.account_code,
+    paymentAccounts: listDevicePaymentAccounts(ctx, row.device_id).map(mapDevicePaymentAccount),
     enabled: row.enabled === 1,
     online: row.enabled === 1 && lastSeen >= threshold,
     pairedAt: row.paired_at,
@@ -284,8 +301,10 @@ function mapDevice(row: DeviceRow): Device {
 function mapDeviceEnrollment(row: DeviceEnrollmentRow, token: string): DeviceEnrollment {
   return {
     id: row.id,
-    accountId: row.account_id,
-    accountCode: row.account_code,
+    paymentAccountId: row.payment_account_id,
+    paymentAccountCode: row.payment_account_code,
+    paymentAccountName: row.payment_account_name,
+    paymentChannel: row.payment_channel,
     name: row.name,
     token,
     pairingUrl: "",
@@ -297,10 +316,11 @@ function mapDeviceEnrollment(row: DeviceEnrollmentRow, token: string): DeviceEnr
 function mapNotification(row: NotificationRow): NotificationLog {
   return {
     id: row.id,
-    accountId: row.account_id,
-    accountCode: row.account_code,
-    deviceId: row.device_id,
+    paymentAccountId: row.payment_account_id,
+    paymentAccountCode: row.payment_account_code,
+    paymentAccountName: row.payment_account_name,
     paymentChannel: row.payment_channel,
+    deviceId: row.device_id,
     packageName: row.package_name,
     channel: row.channel,
     actualAmount: formatMoney(row.actual_amount_cents),
@@ -343,7 +363,6 @@ function parseJson(value: string | null): unknown {
   if (!value) {
     return null;
   }
-
   try {
     return JSON.parse(value);
   } catch {
@@ -351,65 +370,35 @@ function parseJson(value: string | null): unknown {
   }
 }
 
-export function logSystem(
+function paymentAccountById(ctx: AppContext, id: number) {
+  const row = ctx.db.query("SELECT * FROM payment_accounts WHERE id = ?").get(id) as PaymentAccountRow | null;
+  return row ? mapPaymentAccount(row) : null;
+}
+
+function paymentAccountByCode(ctx: AppContext, code: string) {
+  const row = ctx.db.query("SELECT * FROM payment_accounts WHERE code = ?").get(code) as PaymentAccountRow | null;
+  return row ? mapPaymentAccount(row) : null;
+}
+
+function resolvePaymentAccount(
   ctx: AppContext,
-  level: LogLevel,
-  action: string,
-  message: string,
-  context: unknown = null
-) {
-  ctx.db.query(
-    "INSERT INTO system_logs(level, action, message, context, created_at) VALUES (?, ?, ?, ?, ?)"
-  ).run(level, action, message, context == null ? null : JSON.stringify(context), nowIso());
-}
-
-function accountById(ctx: AppContext, id: number) {
-  const row = ctx.db.query("SELECT * FROM accounts WHERE id = ?").get(id) as AccountRow | null;
-  return row ? mapAccount(row) : null;
-}
-
-function accountByCode(ctx: AppContext, code: string) {
-  const row = ctx.db.query("SELECT * FROM accounts WHERE code = ?").get(code) as AccountRow | null;
-  return row ? mapAccount(row) : null;
-}
-
-function defaultAccount(ctx: AppContext) {
-  const row = ctx.db.query("SELECT * FROM accounts WHERE code = ?").get("default") as AccountRow | null;
-  if (!row) {
-    throw apiError(500, "默认账户不存在");
-  }
-  return mapAccount(row);
-}
-
-function resolveAccount(
-  ctx: AppContext,
-  input: { accountId?: number; accountCode?: string; deviceId?: string },
+  input: { paymentAccountId?: number; paymentAccountCode?: string },
   requireEnabled = false
 ) {
-  let account: Account | null = null;
+  let account: PaymentAccount | null = null;
 
-  if (input.accountId != null) {
-    account = accountById(ctx, input.accountId);
-  } else if (input.accountCode) {
-    account = accountByCode(ctx, input.accountCode);
-  } else if (input.deviceId) {
-    const row = ctx.db.query(`
-      SELECT a.*
-      FROM devices d
-      JOIN accounts a ON a.id = d.account_id
-      WHERE d.device_id = ?
-    `).get(input.deviceId) as AccountRow | null;
-    account = row ? mapAccount(row) : null;
+  if (input.paymentAccountId != null) {
+    account = paymentAccountById(ctx, input.paymentAccountId);
+  } else if (input.paymentAccountCode) {
+    account = paymentAccountByCode(ctx, input.paymentAccountCode);
   }
 
-  account ??= defaultAccount(ctx);
-
   if (!account) {
-    throw apiError(404, "账户不存在");
+    throw apiError(404, "收款账号不存在");
   }
 
   if (requireEnabled && !account.enabled) {
-    throw apiError(409, "账户已禁用");
+    throw apiError(409, "收款账号已禁用");
   }
 
   return account;
@@ -422,6 +411,13 @@ export function apiError(status: number, message: string, details?: unknown) {
 function normalizeMaxOffset(value: number) {
   if (!Number.isInteger(value) || value < 0 || value > 9999) {
     throw apiError(400, "最大偏移必须是 0 到 9999 之间的整数分");
+  }
+  return value;
+}
+
+function normalizePriority(value: number) {
+  if (!Number.isInteger(value) || value < 0 || value > 999999) {
+    throw apiError(400, "优先级必须是 0 到 999999 之间的整数");
   }
   return value;
 }
@@ -480,14 +476,28 @@ function normalizePayUrl(value: string | null | undefined, optional = false) {
   }
 }
 
+function orderSelectSql(where: string) {
+  return `
+    SELECT o.*, pa.code AS payment_account_code, pa.name AS payment_account_name
+    FROM orders o
+    JOIN payment_accounts pa ON pa.id = o.payment_account_id
+    ${where}
+  `;
+}
+
+function presetSelectSql(where: string) {
+  return `
+    SELECT q.*, pa.code AS payment_account_code, pa.name AS payment_account_name, pa.payment_channel
+    FROM preset_qr_codes q
+    JOIN payment_accounts pa ON pa.id = q.payment_account_id
+    ${where}
+  `;
+}
+
 export function releaseExpiredLocks(ctx: AppContext) {
   const now = nowIso();
-  const expiredOrders = ctx.db.query(`
-    SELECT o.*, a.code AS account_code
-    FROM orders o
-    JOIN accounts a ON a.id = o.account_id
-    WHERE o.status = 'pending' AND o.expire_at <= ?
-  `).all(now) as OrderRow[];
+  const expiredOrders = ctx.db.query(orderSelectSql("WHERE o.status = 'pending' AND o.expire_at <= ?"))
+    .all(now) as OrderRow[];
 
   if (expiredOrders.length === 0) {
     return 0;
@@ -508,102 +518,98 @@ export function releaseExpiredLocks(ctx: AppContext) {
   return expiredOrders.length;
 }
 
-export function listAccounts(ctx: AppContext) {
-  const rows = ctx.db.query("SELECT * FROM accounts ORDER BY id ASC").all() as AccountRow[];
-  return rows.map(mapAccount);
+export function listPaymentAccounts(ctx: AppContext) {
+  const rows = ctx.db.query("SELECT * FROM payment_accounts ORDER BY payment_channel ASC, priority ASC, id ASC").all() as PaymentAccountRow[];
+  return rows.map(mapPaymentAccount);
 }
 
-export function createAccount(
-  ctx: AppContext,
-  input: {
-    code: string;
-    name: string;
-    maxOffsetCents?: number;
-    fallbackPayUrl?: string | null;
-    alipayFallbackPayUrl?: string | null;
-    wechatFallbackPayUrl?: string | null;
-  }
-) {
+export function createPaymentAccount(ctx: AppContext, input: CreatePaymentAccountInput) {
   const code = input.code.trim();
   const name = input.name.trim();
+  const paymentChannel = normalizePaymentChannel(input.paymentChannel);
+  const priority = normalizePriority(input.priority ?? 100);
   const maxOffsetCents = normalizeMaxOffset(input.maxOffsetCents ?? DEFAULT_MAX_OFFSET_CENTS);
-  const fallbackPayUrl = normalizePayUrl(input.alipayFallbackPayUrl ?? input.fallbackPayUrl ?? null, true);
-  const wechatFallbackPayUrl = normalizePayUrl(input.wechatFallbackPayUrl ?? null, true);
+  const fallbackPayUrl = normalizePayUrl(input.fallbackPayUrl ?? null, true);
+
   if (!/^[a-zA-Z0-9_-]{2,32}$/.test(code)) {
-    throw apiError(400, "账户编码仅支持 2-32 位字母、数字、下划线或短横线");
+    throw apiError(400, "收款账号编码仅支持 2-32 位字母、数字、下划线或短横线");
   }
   if (!name) {
-    throw apiError(400, "账户名称不能为空");
+    throw apiError(400, "收款账号名称不能为空");
   }
 
   try {
-    ctx.db.query("INSERT INTO accounts(code, name, max_offset_cents, fallback_pay_url, wechat_fallback_pay_url) VALUES (?, ?, ?, ?, ?)")
-      .run(code, name, maxOffsetCents, fallbackPayUrl, wechatFallbackPayUrl);
+    ctx.db.query(`
+      INSERT INTO payment_accounts(code, name, payment_channel, priority, max_offset_cents, fallback_pay_url)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(code, name, paymentChannel, priority, maxOffsetCents, fallbackPayUrl);
   } catch {
-    throw apiError(409, "账户编码已存在");
+    throw apiError(409, "收款账号编码已存在");
   }
 
-  const account = accountByCode(ctx, code);
+  const account = paymentAccountByCode(ctx, code);
   if (!account) {
-    throw apiError(500, "账户创建失败");
+    throw apiError(500, "收款账号创建失败");
   }
-  logSystem(ctx, "info", "accounts.created", "账户已创建", { accountId: account.id, code });
+  logSystem(ctx, "info", "payment_accounts.created", "收款账号已创建", { paymentAccountId: account.id, code });
   return account;
 }
 
-export function setAccountEnabled(ctx: AppContext, id: number, enabled: boolean) {
-  const account = accountById(ctx, id);
+export function setPaymentAccountEnabled(ctx: AppContext, id: number, enabled: boolean) {
+  const account = paymentAccountById(ctx, id);
   if (!account) {
-    throw apiError(404, "账户不存在");
+    throw apiError(404, "收款账号不存在");
   }
 
-  ctx.db.query("UPDATE accounts SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, id);
-  logSystem(ctx, "info", "accounts.enabled", "账户状态已更新", { accountId: id, enabled });
-  return accountById(ctx, id);
+  ctx.db.query("UPDATE payment_accounts SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, id);
+  logSystem(ctx, "info", "payment_accounts.enabled", "收款账号状态已更新", { paymentAccountId: id, enabled });
+  return paymentAccountById(ctx, id);
 }
 
-export function updateAccountSettings(
-  ctx: AppContext,
-  id: number,
-  input: {
-    maxOffsetCents?: number;
-    fallbackPayUrl?: string | null;
-    alipayFallbackPayUrl?: string | null;
-    wechatFallbackPayUrl?: string | null;
-  }
-) {
-  const account = accountById(ctx, id);
+export function updatePaymentAccountSettings(ctx: AppContext, id: number, input: UpdatePaymentAccountInput) {
+  const account = paymentAccountById(ctx, id);
   if (!account) {
-    throw apiError(404, "账户不存在");
+    throw apiError(404, "收款账号不存在");
   }
 
+  const code = input.code === undefined ? account.code : input.code.trim();
+  const name = input.name === undefined ? account.name : input.name.trim();
+  const paymentChannel = normalizePaymentChannel(input.paymentChannel, account.paymentChannel);
+  const priority = normalizePriority(input.priority ?? account.priority);
   const maxOffsetCents = normalizeMaxOffset(input.maxOffsetCents ?? account.maxOffsetCents);
   const fallbackPayUrl = normalizePayUrl(
-    input.alipayFallbackPayUrl === undefined
-      ? input.fallbackPayUrl === undefined
-        ? account.alipayFallbackPayUrl
-        : input.fallbackPayUrl
-      : input.alipayFallbackPayUrl,
-    true
-  );
-  const wechatFallbackPayUrl = normalizePayUrl(
-    input.wechatFallbackPayUrl === undefined ? account.wechatFallbackPayUrl : input.wechatFallbackPayUrl,
+    input.fallbackPayUrl === undefined ? account.fallbackPayUrl : input.fallbackPayUrl,
     true
   );
 
-  ctx.db.query("UPDATE accounts SET max_offset_cents = ?, fallback_pay_url = ?, wechat_fallback_pay_url = ? WHERE id = ?")
-    .run(maxOffsetCents, fallbackPayUrl, wechatFallbackPayUrl, id);
-  logSystem(ctx, "info", "accounts.settings_updated", "账户收款设置已更新", {
-    accountId: id,
+  if (!/^[a-zA-Z0-9_-]{2,32}$/.test(code)) {
+    throw apiError(400, "收款账号编码仅支持 2-32 位字母、数字、下划线或短横线");
+  }
+  if (!name) {
+    throw apiError(400, "收款账号名称不能为空");
+  }
+
+  try {
+    ctx.db.query(`
+      UPDATE payment_accounts
+      SET code = ?, name = ?, payment_channel = ?, priority = ?, max_offset_cents = ?, fallback_pay_url = ?
+      WHERE id = ?
+    `).run(code, name, paymentChannel, priority, maxOffsetCents, fallbackPayUrl, id);
+  } catch {
+    throw apiError(409, "收款账号编码已存在");
+  }
+  logSystem(ctx, "info", "payment_accounts.settings_updated", "收款账号配置已更新", {
+    paymentAccountId: id,
+    paymentChannel,
+    priority,
     maxOffsetCents,
-    hasAlipayFallbackPayUrl: Boolean(fallbackPayUrl),
-    hasWechatFallbackPayUrl: Boolean(wechatFallbackPayUrl)
+    hasFallbackPayUrl: Boolean(fallbackPayUrl)
   });
-  return accountById(ctx, id);
+  return paymentAccountById(ctx, id);
 }
 
 export function upsertPresetQrCodes(ctx: AppContext, input: BulkPresetQrCodeInput) {
-  const account = resolveAccount(ctx, input, true);
+  const account = resolvePaymentAccount(ctx, input, true);
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw apiError(400, "请提供至少一个二维码配置");
   }
@@ -613,50 +619,48 @@ export function upsertPresetQrCodes(ctx: AppContext, input: BulkPresetQrCodeInpu
 
   const now = nowIso();
   const upsert = ctx.db.query(`
-    INSERT INTO preset_qr_codes(account_id, payment_channel, amount_cents, pay_url, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(account_id, payment_channel, amount_cents) DO UPDATE SET
+    INSERT INTO preset_qr_codes(payment_account_id, amount_cents, pay_url, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(payment_account_id, amount_cents) DO UPDATE SET
       pay_url = excluded.pay_url,
       updated_at = excluded.updated_at
   `);
-  const inputPaymentChannel = normalizePaymentChannel(input.paymentChannel ?? input.channel);
 
   let saved = 0;
   const transaction = ctx.db.transaction(() => {
     for (const item of input.items) {
-      const paymentChannel = normalizePaymentChannel(item.paymentChannel ?? item.channel, inputPaymentChannel);
       const amountCents = parseMoney(item.amount);
       const payUrl = normalizePayUrl(item.payUrl);
-      upsert.run(account.id, paymentChannel, amountCents, payUrl, now, now);
+      upsert.run(account.id, amountCents, payUrl, now, now);
       saved += 1;
     }
   });
   transaction();
 
   logSystem(ctx, "info", "preset_qr_codes.upserted", "定额二维码已保存", {
-    accountId: account.id,
+    paymentAccountId: account.id,
     saved
   });
-  return { account, saved };
+  return { paymentAccount: account, saved };
 }
 
 export function listPresetQrCodes(
   ctx: AppContext,
-  options: { accountId?: number; accountCode?: string; paymentChannel?: string; limit?: number; offset?: number } = {}
+  options: { paymentAccountId?: number; paymentAccountCode?: string; paymentChannel?: string; limit?: number; offset?: number } = {}
 ): Page<PresetQrCode> {
   const filters: string[] = [];
   const params: SQLQueryBindings[] = [];
 
-  if (options.accountId != null) {
-    filters.push("q.account_id = ?");
-    params.push(options.accountId);
+  if (options.paymentAccountId != null) {
+    filters.push("q.payment_account_id = ?");
+    params.push(options.paymentAccountId);
   }
-  if (options.accountCode) {
-    filters.push("a.code = ?");
-    params.push(options.accountCode);
+  if (options.paymentAccountCode) {
+    filters.push("pa.code = ?");
+    params.push(options.paymentAccountCode);
   }
   if (options.paymentChannel) {
-    filters.push("q.payment_channel = ?");
+    filters.push("pa.payment_channel = ?");
     params.push(normalizePaymentChannel(options.paymentChannel));
   }
 
@@ -664,17 +668,14 @@ export function listPresetQrCodes(
   const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
   const offset = Math.max(options.offset ?? 0, 0);
   const rows = ctx.db.query(`
-    SELECT q.*, a.code AS account_code
-    FROM preset_qr_codes q
-    JOIN accounts a ON a.id = q.account_id
-    ${where}
-    ORDER BY q.account_id ASC, q.payment_channel ASC, q.amount_cents ASC
+    ${presetSelectSql(where)}
+    ORDER BY pa.payment_channel ASC, pa.priority ASC, pa.id ASC, q.amount_cents ASC
     LIMIT ? OFFSET ?
   `).all(...params, limit, offset) as PresetQrCodeRow[];
   const total = scalar(ctx, `
     SELECT COUNT(*) AS value
     FROM preset_qr_codes q
-    JOIN accounts a ON a.id = q.account_id
+    JOIN payment_accounts pa ON pa.id = q.payment_account_id
     ${where}
   `, ...params);
 
@@ -682,12 +683,7 @@ export function listPresetQrCodes(
 }
 
 export function deletePresetQrCode(ctx: AppContext, id: number) {
-  const row = ctx.db.query(`
-    SELECT q.*, a.code AS account_code
-    FROM preset_qr_codes q
-    JOIN accounts a ON a.id = q.account_id
-    WHERE q.id = ?
-  `).get(id) as PresetQrCodeRow | null;
+  const row = ctx.db.query(presetSelectSql("WHERE q.id = ?")).get(id) as PresetQrCodeRow | null;
 
   if (!row) {
     throw apiError(404, "定额二维码不存在");
@@ -696,62 +692,90 @@ export function deletePresetQrCode(ctx: AppContext, id: number) {
   ctx.db.query("DELETE FROM preset_qr_codes WHERE id = ?").run(id);
   logSystem(ctx, "warn", "preset_qr_codes.deleted", "定额二维码已删除", {
     qrCodeId: id,
-    accountId: row.account_id,
-    paymentChannel: row.payment_channel,
+    paymentAccountId: row.payment_account_id,
     amount: formatMoney(row.amount_cents)
   });
 
   return mapPresetQrCode(row);
 }
 
-function allocateActualAmount(
-  ctx: AppContext,
-  accountId: number,
-  paymentChannel: PaymentChannel,
-  requestedAmount: number,
-  maxOffsetCents: number,
-  now: string
-) {
-  const effectiveMaxOffsetCents = requestedAmount % 100 === 0 ? maxOffsetCents : 0;
-  const rows = ctx.db.query(`
-    SELECT actual_amount_cents AS amount
-    FROM orders
-    WHERE account_id = ?
-      AND payment_channel = ?
-      AND status = 'pending'
-      AND expire_at > ?
-      AND actual_amount_cents BETWEEN ? AND ?
-  `).all(accountId, paymentChannel, now, requestedAmount, requestedAmount + effectiveMaxOffsetCents) as Array<{ amount: number }>;
-  const occupied = new Set(rows.map((row) => row.amount));
-
-  for (let offset = 0; offset <= effectiveMaxOffsetCents; offset += 1) {
-    const candidate = requestedAmount + offset;
-    if (!occupied.has(candidate)) {
-      return candidate;
-    }
-  }
-
-  throw apiError(409, `订单金额 ${formatMoney(requestedAmount)} 在最大偏移 ${formatMoney(effectiveMaxOffsetCents)} 内已被占满`);
+function enabledPaymentAccountRows(ctx: AppContext, paymentChannel: PaymentChannel) {
+  return ctx.db.query(`
+    SELECT *
+    FROM payment_accounts
+    WHERE payment_channel = ? AND enabled = 1
+    ORDER BY priority ASC, id ASC
+  `).all(paymentChannel) as PaymentAccountRow[];
 }
 
-function findPresetQrCode(ctx: AppContext, accountId: number, paymentChannel: PaymentChannel, amountCents: number) {
-  const row = ctx.db.query(`
-    SELECT q.*, a.code AS account_code
-    FROM preset_qr_codes q
-    JOIN accounts a ON a.id = q.account_id
-    WHERE q.account_id = ? AND q.payment_channel = ? AND q.amount_cents = ?
-  `).get(accountId, paymentChannel, amountCents) as PresetQrCodeRow | null;
+function findPresetQrCode(ctx: AppContext, paymentAccountId: number, amountCents: number) {
+  const row = ctx.db.query(presetSelectSql("WHERE q.payment_account_id = ? AND q.amount_cents = ?"))
+    .get(paymentAccountId, amountCents) as PresetQrCodeRow | null;
 
   return row ? mapPresetQrCode(row) : null;
 }
 
-function fallbackPayUrlForChannel(account: Account, paymentChannel: PaymentChannel) {
-  return paymentChannel === "wechat" ? account.wechatFallbackPayUrl : account.alipayFallbackPayUrl;
+function allocateActualAmount(
+  ctx: AppContext,
+  paymentChannel: PaymentChannel,
+  requestedAmount: number,
+  now: string
+) {
+  const accounts = enabledPaymentAccountRows(ctx, paymentChannel);
+  if (accounts.length === 0) {
+    throw apiError(409, "没有可用收款账号");
+  }
+
+  const maxOffsetCents = requestedAmount % 100 === 0
+    ? Math.max(...accounts.map((account) => account.max_offset_cents))
+    : 0;
+  const accountIds = accounts.map((account) => account.id);
+  const placeholders = accountIds.map(() => "?").join(", ");
+  const rows = ctx.db.query(`
+    SELECT payment_account_id AS paymentAccountId, actual_amount_cents AS amount
+    FROM orders
+    WHERE payment_account_id IN (${placeholders})
+      AND status = 'pending'
+      AND expire_at > ?
+      AND actual_amount_cents BETWEEN ? AND ?
+  `).all(...accountIds, now, requestedAmount, requestedAmount + maxOffsetCents) as Array<{ paymentAccountId: number; amount: number }>;
+  const occupied = new Map<number, Set<number>>();
+  for (const row of rows) {
+    const set = occupied.get(row.paymentAccountId) ?? new Set<number>();
+    set.add(row.amount);
+    occupied.set(row.paymentAccountId, set);
+  }
+
+  for (let offset = 0; offset <= maxOffsetCents; offset += 1) {
+    for (const account of accounts) {
+      if (offset > account.max_offset_cents) {
+        continue;
+      }
+      const candidate = requestedAmount + offset;
+      if (occupied.get(account.id)?.has(candidate)) {
+        continue;
+      }
+
+      const preset = findPresetQrCode(ctx, account.id, candidate);
+      const payUrl = preset?.payUrl ?? account.fallback_pay_url;
+      if (!payUrl) {
+        continue;
+      }
+
+      return {
+        account,
+        actualAmount: candidate,
+        payUrl,
+        payMode: (preset ? "preset" : "fallback") as PayMode
+      };
+    }
+  }
+
+  throw apiError(409, `付款方式 ${paymentChannel} 的订单金额 ${formatMoney(requestedAmount)} 在账号池最大偏移 ${formatMoney(maxOffsetCents)} 内已无可用收款账号`);
 }
 
 export function createOrder(ctx: AppContext, input: CreateOrderInput) {
   releaseExpiredLocks(ctx);
-  const account = resolveAccount(ctx, input, true);
   const paymentChannel = normalizePaymentChannel(input.paymentChannel ?? input.channel);
   const requestedAmount = parseMoney(input.amount);
   const ttlMinutes = Math.min(Math.max(input.ttlMinutes ?? DEFAULT_ORDER_TTL_MINUTES, 1), 1440);
@@ -760,31 +784,24 @@ export function createOrder(ctx: AppContext, input: CreateOrderInput) {
   const id = createOrderId();
 
   const createTransaction = ctx.db.transaction(() => {
-    const actualAmount = allocateActualAmount(ctx, account.id, paymentChannel, requestedAmount, account.maxOffsetCents, now);
-    const preset = findPresetQrCode(ctx, account.id, paymentChannel, actualAmount);
-    const payUrl = preset?.payUrl ?? fallbackPayUrlForChannel(account, paymentChannel);
-    const payMode: PayMode = preset ? "preset" : "fallback";
-
-    if (!payUrl) {
-      throw apiError(409, "该金额没有定额二维码，账户也没有兜底通用收款码");
-    }
+    const allocation = allocateActualAmount(ctx, paymentChannel, requestedAmount, now);
 
     ctx.db.query(`
       INSERT INTO orders(
-        id, merchant_order_id, account_id, requested_amount_cents, actual_amount_cents, payment_channel, pay_url, pay_mode, amount_input_required,
-        status, subject, callback_url, callback_secret, expire_at, created_at, updated_at
+        id, merchant_order_id, payment_account_id, payment_channel, requested_amount_cents, actual_amount_cents,
+        pay_url, pay_mode, amount_input_required, status, subject, callback_url, callback_secret, expire_at, created_at, updated_at
       )
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       input.merchantOrderId?.trim() || null,
-      account.id,
-      requestedAmount,
-      actualAmount,
+      allocation.account.id,
       paymentChannel,
-      payUrl,
-      payMode,
-      payMode === "fallback" ? 1 : 0,
+      requestedAmount,
+      allocation.actualAmount,
+      allocation.payUrl,
+      allocation.payMode,
+      allocation.payMode === "fallback" ? 1 : 0,
       input.subject?.trim() || null,
       input.callbackUrl?.trim() || null,
       input.callbackSecret?.trim() || null,
@@ -801,7 +818,8 @@ export function createOrder(ctx: AppContext, input: CreateOrderInput) {
   }
   logSystem(ctx, "info", "orders.created", "订单已创建并分配金额", {
     orderId: id,
-    accountId: account.id,
+    paymentAccountId: order.paymentAccountId,
+    paymentAccountCode: order.paymentAccountCode,
     paymentChannel: order.paymentChannel,
     requestedAmount: formatMoney(requestedAmount),
     actualAmount: order.actualAmount,
@@ -811,19 +829,13 @@ export function createOrder(ctx: AppContext, input: CreateOrderInput) {
 }
 
 export function getOrder(ctx: AppContext, id: string) {
-  const row = ctx.db.query(`
-    SELECT o.*, a.code AS account_code
-    FROM orders o
-    JOIN accounts a ON a.id = o.account_id
-    WHERE o.id = ?
-  `).get(id) as OrderRow | null;
-
+  const row = ctx.db.query(orderSelectSql("WHERE o.id = ?")).get(id) as OrderRow | null;
   return row ? mapOrder(row) : null;
 }
 
 export function listOrders(
   ctx: AppContext,
-  options: { status?: string; accountId?: number; accountCode?: string; limit?: number; offset?: number } = {}
+  options: { status?: string; paymentAccountId?: number; paymentAccountCode?: string; paymentChannel?: string; limit?: number; offset?: number } = {}
 ): Page<Order> {
   releaseExpiredLocks(ctx);
   const filters: string[] = [];
@@ -834,30 +846,31 @@ export function listOrders(
     filters.push("o.status = ?");
     params.push(status);
   }
-  if (options.accountId != null) {
-    filters.push("o.account_id = ?");
-    params.push(options.accountId);
+  if (options.paymentAccountId != null) {
+    filters.push("o.payment_account_id = ?");
+    params.push(options.paymentAccountId);
   }
-  if (options.accountCode) {
-    filters.push("a.code = ?");
-    params.push(options.accountCode);
+  if (options.paymentAccountCode) {
+    filters.push("pa.code = ?");
+    params.push(options.paymentAccountCode);
+  }
+  if (options.paymentChannel) {
+    filters.push("o.payment_channel = ?");
+    params.push(normalizePaymentChannel(options.paymentChannel));
   }
 
   const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
   const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
   const offset = Math.max(options.offset ?? 0, 0);
   const rows = ctx.db.query(`
-    SELECT o.*, a.code AS account_code
-    FROM orders o
-    JOIN accounts a ON a.id = o.account_id
-    ${where}
+    ${orderSelectSql(where)}
     ORDER BY o.created_at DESC
     LIMIT ? OFFSET ?
   `).all(...params, limit, offset) as OrderRow[];
   const total = scalar(ctx, `
     SELECT COUNT(*) AS value
     FROM orders o
-    JOIN accounts a ON a.id = o.account_id
+    JOIN payment_accounts pa ON pa.id = o.payment_account_id
     ${where}
   `, ...params);
 
@@ -878,7 +891,6 @@ export function updateOrderStatus(ctx: AppContext, id: string, status: OrderStat
           updated_at = ?
       WHERE id = ?
     `).run(status, status === "paid" || status === "notified" ? now : null, status, now, now, id);
-
   });
   transaction();
 
@@ -894,22 +906,22 @@ export function updateOrderStatus(ctx: AppContext, id: string, status: OrderStat
 }
 
 export function createDeviceEnrollment(ctx: AppContext, input: CreateDeviceEnrollmentInput): DeviceEnrollment {
-  const account = resolveAccount(ctx, input, true);
+  const account = resolvePaymentAccount(ctx, input, true);
   const ttlMinutes = Math.min(Math.max(input.ttlMinutes ?? 30, 1), 1440);
   const now = nowIso();
   const token = createSecret(18);
   const expiresAt = addMinutes(ttlMinutes);
 
   ctx.db.query(`
-    INSERT INTO device_enrollments(account_id, name, token_hash, expires_at, created_at)
+    INSERT INTO device_enrollments(payment_account_id, name, token_hash, expires_at, created_at)
     VALUES (?, ?, ?, ?, ?)
   `).run(account.id, input.name?.trim() || null, sha256(token), expiresAt, now);
 
   const id = (ctx.db.query("SELECT last_insert_rowid() AS id").get() as { id: number }).id;
   const row = ctx.db.query(`
-    SELECT e.*, a.code AS account_code
+    SELECT e.*, pa.code AS payment_account_code, pa.name AS payment_account_name, pa.payment_channel
     FROM device_enrollments e
-    JOIN accounts a ON a.id = e.account_id
+    JOIN payment_accounts pa ON pa.id = e.payment_account_id
     WHERE e.id = ?
   `).get(id) as DeviceEnrollmentRow | null;
 
@@ -919,7 +931,7 @@ export function createDeviceEnrollment(ctx: AppContext, input: CreateDeviceEnrol
 
   logSystem(ctx, "info", "devices.enrollment_created", "设备配对码已创建", {
     enrollmentId: id,
-    accountId: account.id,
+    paymentAccountId: account.id,
     expiresAt
   });
   return mapDeviceEnrollment(row, token);
@@ -934,9 +946,9 @@ export function enrollAndroidDevice(ctx: AppContext, input: EnrollDeviceInput): 
 
   const now = nowIso();
   const row = ctx.db.query(`
-    SELECT e.*, a.code AS account_code
+    SELECT e.*, pa.code AS payment_account_code, pa.name AS payment_account_name, pa.payment_channel
     FROM device_enrollments e
-    JOIN accounts a ON a.id = e.account_id
+    JOIN payment_accounts pa ON pa.id = e.payment_account_id
     WHERE e.token_hash = ? AND e.used_at IS NULL AND e.expires_at > ?
   `).get(sha256(token), now) as DeviceEnrollmentRow | null;
 
@@ -954,14 +966,13 @@ export function enrollAndroidDevice(ctx: AppContext, input: EnrollDeviceInput): 
     }
 
     ctx.db.query(`
-      INSERT INTO devices(device_id, name, account_id, device_secret, enabled, paired_at, last_seen_at, app_version, metadata, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+      INSERT INTO devices(device_id, name, device_secret, enabled, paired_at, last_seen_at, app_version, metadata, created_at, updated_at)
+      VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(device_id) DO UPDATE SET
         name = COALESCE(excluded.name, devices.name),
-        account_id = excluded.account_id,
         device_secret = excluded.device_secret,
         enabled = 1,
-        paired_at = excluded.paired_at,
+        paired_at = COALESCE(devices.paired_at, excluded.paired_at),
         last_seen_at = excluded.last_seen_at,
         app_version = COALESCE(excluded.app_version, devices.app_version),
         metadata = COALESCE(excluded.metadata, devices.metadata),
@@ -969,7 +980,6 @@ export function enrollAndroidDevice(ctx: AppContext, input: EnrollDeviceInput): 
     `).run(
       deviceId,
       name,
-      row.account_id,
       deviceSecret,
       now,
       now,
@@ -978,6 +988,11 @@ export function enrollAndroidDevice(ctx: AppContext, input: EnrollDeviceInput): 
       now,
       now
     );
+
+    ctx.db.query(`
+      INSERT OR IGNORE INTO device_payment_accounts(device_id, payment_account_id, created_at)
+      VALUES (?, ?, ?)
+    `).run(deviceId, row.payment_account_id, now);
   });
   transaction();
 
@@ -988,9 +1003,9 @@ export function enrollAndroidDevice(ctx: AppContext, input: EnrollDeviceInput): 
 
   logSystem(ctx, "info", "devices.enrolled", "安卓设备已加入系统", {
     deviceId,
-    accountId: row.account_id
+    paymentAccountId: row.payment_account_id
   });
-  return { device: mapDevice(device), deviceSecret };
+  return { device: mapDevice(ctx, device), deviceSecret };
 }
 
 export function touchDevice(ctx: AppContext, input: HeartbeatInput, verifiedDevice: Device) {
@@ -1019,26 +1034,35 @@ export function touchDevice(ctx: AppContext, input: HeartbeatInput, verifiedDevi
     throw apiError(500, "设备心跳更新失败");
   }
 
-  return mapDevice(device);
+  return mapDevice(ctx, device);
 }
 
 function getDeviceByDeviceId(ctx: AppContext, deviceId: string) {
+  return ctx.db.query("SELECT * FROM devices WHERE device_id = ?").get(deviceId) as DeviceRow | null;
+}
+
+function listDevicePaymentAccounts(ctx: AppContext, deviceId: string, paymentChannel?: PaymentChannel) {
+  const params: SQLQueryBindings[] = [deviceId];
+  const channelFilter = paymentChannel ? "AND pa.payment_channel = ?" : "";
+  if (paymentChannel) {
+    params.push(paymentChannel);
+  }
   return ctx.db.query(`
-    SELECT d.*, a.code AS account_code
-    FROM devices d
-    LEFT JOIN accounts a ON a.id = d.account_id
-    WHERE d.device_id = ?
-  `).get(deviceId) as DeviceRow | null;
+    SELECT pa.*
+    FROM device_payment_accounts dpa
+    JOIN payment_accounts pa ON pa.id = dpa.payment_account_id
+    WHERE dpa.device_id = ? ${channelFilter}
+    ORDER BY pa.payment_channel ASC, pa.priority ASC, pa.id ASC
+  `).all(...params) as PaymentAccountRow[];
 }
 
 export function listDevices(ctx: AppContext) {
   const rows = ctx.db.query(`
-    SELECT d.*, a.code AS account_code
-    FROM devices d
-    LEFT JOIN accounts a ON a.id = d.account_id
-    ORDER BY d.last_seen_at DESC NULLS LAST, d.id DESC
+    SELECT *
+    FROM devices
+    ORDER BY last_seen_at DESC NULLS LAST, id DESC
   `).all() as DeviceRow[];
-  return rows.map(mapDevice);
+  return rows.map((row) => mapDevice(ctx, row));
 }
 
 export function setDeviceEnabled(ctx: AppContext, id: number, enabled: boolean) {
@@ -1064,7 +1088,7 @@ export function verifyAndroidRequest(ctx: AppContext, req: Request, bodyText: st
   }
 
   const row = getDeviceByDeviceId(ctx, deviceId);
-  if (!row || row.enabled !== 1 || !row.device_secret || !row.account_id) {
+  if (!row || row.enabled !== 1 || !row.device_secret) {
     throw apiError(401, "设备不存在、未配对或已禁用");
   }
 
@@ -1085,7 +1109,7 @@ export function verifyAndroidRequest(ctx: AppContext, req: Request, bodyText: st
   rememberDeviceNonce(ctx, deviceId, nonce);
   const now = nowIso();
   ctx.db.query("UPDATE devices SET last_seen_at = ?, updated_at = ? WHERE device_id = ?").run(now, now, deviceId);
-  return mapDevice({ ...row, last_seen_at: now, updated_at: now });
+  return mapDevice(ctx, { ...row, last_seen_at: now, updated_at: now });
 }
 
 export function signAndroidRequest(input: {
@@ -1140,10 +1164,6 @@ export function handleAndroidNotification(
 ): NotificationMatchResult {
   releaseExpiredLocks(ctx);
   const deviceId = verifiedDevice.deviceId;
-  if (!verifiedDevice.accountId) {
-    throw apiError(401, "设备未绑定账户");
-  }
-  const account = resolveAccount(ctx, { accountId: verifiedDevice.accountId }, true);
   const rawText = input.rawText?.trim() || input.text?.trim() || "";
   const packageName = packageNameFromNotification(input);
   const paymentChannel = inferPaymentChannel(input, rawText);
@@ -1159,7 +1179,7 @@ export function handleAndroidNotification(
   const now = nowIso();
   if (amountCents == null) {
     const log = insertNotificationLog(ctx, {
-      accountId: account.id,
+      paymentAccountId: null,
       deviceId,
       channel: rawChannel,
       paymentChannel,
@@ -1174,32 +1194,35 @@ export function handleAndroidNotification(
     return { matched: false, order: null, log };
   }
 
+  const boundAccounts = listDevicePaymentAccounts(ctx, deviceId, paymentChannel)
+    .filter((account) => account.enabled === 1);
   const transaction = ctx.db.transaction((): NotificationMatchResult => {
     let matchedOrder: Order | null = null;
-    const orderRow = ctx.db.query(`
-      SELECT o.*, a.code AS account_code
-      FROM orders o
-      JOIN accounts a ON a.id = o.account_id
-      WHERE o.account_id = ?
-        AND o.payment_channel = ?
-        AND o.actual_amount_cents = ?
-        AND o.status = 'pending'
-        AND o.expire_at > ?
-      ORDER BY o.created_at ASC
-      LIMIT 1
-    `).get(account.id, paymentChannel, amountCents, now) as OrderRow | null;
+    if (boundAccounts.length > 0) {
+      const accountIds = boundAccounts.map((account) => account.id);
+      const placeholders = accountIds.map(() => "?").join(", ");
+      const orderRow = ctx.db.query(`
+        ${orderSelectSql(`WHERE o.payment_account_id IN (${placeholders})
+          AND o.payment_channel = ?
+          AND o.actual_amount_cents = ?
+          AND o.status = 'pending'
+          AND o.expire_at > ?`)}
+        ORDER BY pa.priority ASC, pa.id ASC, o.created_at ASC
+        LIMIT 1
+      `).get(...accountIds, paymentChannel, amountCents, now) as OrderRow | null;
 
-    if (orderRow) {
-      ctx.db.query(`
-        UPDATE orders
-        SET status = 'paid', paid_at = ?, updated_at = ?
-        WHERE id = ?
-      `).run(now, now, orderRow.id);
-      matchedOrder = getOrder(ctx, orderRow.id);
+      if (orderRow) {
+        ctx.db.query(`
+          UPDATE orders
+          SET status = 'paid', paid_at = ?, updated_at = ?
+          WHERE id = ?
+        `).run(now, now, orderRow.id);
+        matchedOrder = getOrder(ctx, orderRow.id);
+      }
     }
 
     const log = insertNotificationLog(ctx, {
-      accountId: account.id,
+      paymentAccountId: matchedOrder?.paymentAccountId ?? null,
       deviceId,
       channel: rawChannel,
       paymentChannel,
@@ -1220,13 +1243,14 @@ export function handleAndroidNotification(
   if (matchedOrder) {
     logSystem(ctx, "info", "notifications.matched", "到账通知已匹配订单", {
       orderId: matchedOrder.id,
+      paymentAccountId: matchedOrder.paymentAccountId,
       paymentChannel,
       amount: matchedOrder.actualAmount
     });
     queueCallback(ctx, matchedOrder);
   } else {
     logSystem(ctx, "warn", "notifications.unmatched", "到账通知未匹配订单", {
-      accountId: account.id,
+      deviceId,
       paymentChannel,
       packageName,
       amount: formatMoney(amountCents)
@@ -1239,7 +1263,7 @@ export function handleAndroidNotification(
 function insertNotificationLog(
   ctx: AppContext,
   input: {
-    accountId: number;
+    paymentAccountId: number | null;
     deviceId?: string;
     channel?: string | null;
     paymentChannel: PaymentChannel | null;
@@ -1253,12 +1277,12 @@ function insertNotificationLog(
 ) {
   ctx.db.query(`
     INSERT INTO payment_notifications(
-      account_id, device_id, channel, payment_channel, package_name, actual_amount_cents, raw_text,
+      payment_account_id, device_id, channel, payment_channel, package_name, actual_amount_cents, raw_text,
       matched_order_id, status, received_at
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    input.accountId,
+    input.paymentAccountId,
     input.deviceId ?? null,
     input.channel?.trim() || null,
     input.paymentChannel,
@@ -1276,15 +1300,16 @@ function insertNotificationLog(
 
 function getNotificationLog(ctx: AppContext, id: number) {
   const row = ctx.db.query(`
-    SELECT n.*, a.code AS account_code
+    SELECT n.*, pa.code AS payment_account_code, pa.name AS payment_account_name
     FROM payment_notifications n
-    JOIN accounts a ON a.id = n.account_id
+    LEFT JOIN payment_accounts pa ON pa.id = n.payment_account_id
     WHERE n.id = ?
   `).get(id) as NotificationRow | null;
 
   if (!row) {
-    throw apiError(500, "通知日志读取失败");
+    throw apiError(500, "到账通知日志读取失败");
   }
+
   return mapNotification(row);
 }
 
@@ -1305,9 +1330,9 @@ export function listNotificationLogs(
   const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
   const offset = Math.max(options.offset ?? 0, 0);
   const rows = ctx.db.query(`
-    SELECT n.*, a.code AS account_code
+    SELECT n.*, pa.code AS payment_account_code, pa.name AS payment_account_name
     FROM payment_notifications n
-    JOIN accounts a ON a.id = n.account_id
+    LEFT JOIN payment_accounts pa ON pa.id = n.payment_account_id
     ${where}
     ORDER BY n.received_at DESC
     LIMIT ? OFFSET ?
@@ -1315,7 +1340,7 @@ export function listNotificationLogs(
   const total = scalar(ctx, `
     SELECT COUNT(*) AS value
     FROM payment_notifications n
-    JOIN accounts a ON a.id = n.account_id
+    LEFT JOIN payment_accounts pa ON pa.id = n.payment_account_id
     ${where}
   `, ...params);
 
@@ -1356,9 +1381,9 @@ function callbackPayload(ctx: AppContext, order: Order) {
   const payload = {
     orderId: order.id,
     merchantOrderId: order.merchantOrderId,
-    accountCode: order.accountCode,
-    status: "paid",
+    paymentAccountCode: order.paymentAccountCode,
     paymentChannel: order.paymentChannel,
+    status: "paid",
     requestedAmount: order.requestedAmount,
     actualAmount: order.actualAmount,
     paidAt: order.paidAt
@@ -1456,13 +1481,12 @@ export async function dispatchCallback(ctx: AppContext, id: number) {
       });
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     ctx.db.query(`
       UPDATE callback_logs
       SET status = 'failed', error = ?, attempts = ?, next_retry_at = ?, updated_at = ?
       WHERE id = ?
     `).run(
-      message.slice(0, 1000),
+      error instanceof Error ? error.message : String(error),
       attempts,
       attempts >= ctx.callbackMaxAttempts ? null : addSeconds(30 * attempts),
       now,
@@ -1471,28 +1495,32 @@ export async function dispatchCallback(ctx: AppContext, id: number) {
     logSystem(ctx, "warn", "callbacks.error", "订单回调请求异常", {
       callbackId: id,
       orderId: row.order_id,
-      error: message
+      error: error instanceof Error ? error.message : String(error)
     });
   }
 
   return getCallbackLog(ctx, id);
 }
 
-export async function retryDueCallbacks(ctx: AppContext) {
+export async function dispatchDueCallbacks(ctx: AppContext) {
   const now = nowIso();
   const rows = ctx.db.query(`
     SELECT *
     FROM callback_logs
-    WHERE status != 'success'
+    WHERE status IN ('pending', 'failed')
       AND attempts < ?
       AND (next_retry_at IS NULL OR next_retry_at <= ?)
     ORDER BY created_at ASC
     LIMIT 20
   `).all(ctx.callbackMaxAttempts, now) as CallbackRow[];
 
-  await Promise.all(rows.map((row) => dispatchCallback(ctx, row.id)));
+  for (const row of rows) {
+    await dispatchCallback(ctx, row.id);
+  }
   return rows.length;
 }
+
+export const retryDueCallbacks = dispatchDueCallbacks;
 
 export function listCallbackLogs(
   ctx: AppContext,
@@ -1505,7 +1533,6 @@ export function listCallbackLogs(
     filters.push("status = ?");
     params.push(status);
   }
-
   const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
   const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
   const offset = Math.max(options.offset ?? 0, 0);
@@ -1521,50 +1548,57 @@ export function listCallbackLogs(
   return { items: rows.map(mapCallback), total, limit, offset };
 }
 
+export function logSystem(ctx: AppContext, level: LogLevel, action: string, message: string, context?: unknown) {
+  ctx.db.query("INSERT INTO system_logs(level, action, message, context, created_at) VALUES (?, ?, ?, ?, ?)")
+    .run(level, action, message, context === undefined ? null : JSON.stringify(context), nowIso());
+}
+
 export function listAmountOccupations(
   ctx: AppContext,
-  options: { accountId?: number; accountCode?: string; limit?: number; offset?: number } = {}
+  options: { paymentAccountId?: number; paymentAccountCode?: string; paymentChannel?: string; limit?: number; offset?: number } = {}
 ): Page<AmountOccupation> {
   releaseExpiredLocks(ctx);
   const filters = ["o.status = 'pending'"];
   const params: SQLQueryBindings[] = [];
 
-  if (options.accountId != null) {
-    filters.push("o.account_id = ?");
-    params.push(options.accountId);
+  if (options.paymentAccountId != null) {
+    filters.push("o.payment_account_id = ?");
+    params.push(options.paymentAccountId);
   }
-  if (options.accountCode) {
-    filters.push("a.code = ?");
-    params.push(options.accountCode);
+  if (options.paymentAccountCode) {
+    filters.push("pa.code = ?");
+    params.push(options.paymentAccountCode);
+  }
+  if (options.paymentChannel) {
+    filters.push("o.payment_channel = ?");
+    params.push(normalizePaymentChannel(options.paymentChannel));
   }
 
   const where = `WHERE ${filters.join(" AND ")}`;
   const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
   const offset = Math.max(options.offset ?? 0, 0);
   const rows = ctx.db.query(`
-    SELECT o.*, a.code AS account_code
-    FROM orders o
-    JOIN accounts a ON a.id = o.account_id
-    ${where}
+    ${orderSelectSql(where)}
     ORDER BY o.expire_at ASC
     LIMIT ? OFFSET ?
   `).all(...params, limit, offset) as OrderRow[];
   const total = scalar(ctx, `
     SELECT COUNT(*) AS value
     FROM orders o
-    JOIN accounts a ON a.id = o.account_id
+    JOIN payment_accounts pa ON pa.id = o.payment_account_id
     ${where}
   `, ...params);
 
   return {
     items: rows.map((row) => ({
       orderId: row.id,
-      accountId: row.account_id,
-      accountCode: row.account_code,
+      paymentAccountId: row.payment_account_id,
+      paymentAccountCode: row.payment_account_code,
+      paymentAccountName: row.payment_account_name,
+      paymentChannel: row.payment_channel,
       actualAmount: formatMoney(row.actual_amount_cents) ?? "0.00",
       actualAmountCents: row.actual_amount_cents,
       requestedAmount: formatMoney(row.requested_amount_cents) ?? "0.00",
-      paymentChannel: row.payment_channel,
       status: row.status,
       expireAt: row.expire_at,
       payMode: row.pay_mode
@@ -1599,15 +1633,7 @@ export function dashboardStats(ctx: AppContext): DashboardStats {
     amountPool: {
       occupied: scalar(ctx, "SELECT COUNT(*) AS value FROM orders WHERE status = 'pending'"),
       presetQrCodes: scalar(ctx, "SELECT COUNT(*) AS value FROM preset_qr_codes"),
-      fallbackAccounts: scalar(ctx, `
-        SELECT COUNT(*) AS value
-        FROM accounts
-        WHERE enabled = 1
-          AND (
-            (fallback_pay_url IS NOT NULL AND fallback_pay_url != '')
-            OR (wechat_fallback_pay_url IS NOT NULL AND wechat_fallback_pay_url != '')
-          )
-      `)
+      fallbackAccounts: scalar(ctx, "SELECT COUNT(*) AS value FROM payment_accounts WHERE enabled = 1 AND fallback_pay_url IS NOT NULL AND fallback_pay_url != ''")
     },
     callbacks: {
       pending: scalar(ctx, "SELECT COUNT(*) AS value FROM callback_logs WHERE status = 'pending'"),

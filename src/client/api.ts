@@ -1,18 +1,20 @@
 import type {
-  Account,
   AmountOccupation,
   BulkPresetQrCodeInput,
   CallbackLog,
   CreateDeviceEnrollmentInput,
+  CreatePaymentAccountInput,
   DashboardStats,
-  DeviceEnrollment,
   Device,
+  DeviceEnrollment,
   NotificationLog,
   Order,
   OrderStatus,
   Page,
+  PaymentAccount,
   PresetQrCode,
-  SystemLog
+  SystemLog,
+  UpdatePaymentAccountInput
 } from "../shared/types";
 
 export interface AdminSessionState {
@@ -52,7 +54,7 @@ async function request<T>(path: string, init: RequestInit = {}) {
 export function loadSnapshot() {
   return Promise.all([
     request<DashboardStats>("/api/dashboard"),
-    request<Account[]>("/api/accounts"),
+    request<PaymentAccount[]>("/api/payment-accounts"),
     request<Page<Order>>("/api/orders?limit=80"),
     request<Page<AmountOccupation>>("/api/amount-occupations?limit=160"),
     request<Page<PresetQrCode>>("/api/preset-qrcodes?limit=160"),
@@ -60,9 +62,9 @@ export function loadSnapshot() {
     request<Page<NotificationLog>>("/api/logs/notifications?limit=80"),
     request<Page<SystemLog>>("/api/logs/system?limit=80"),
     request<Page<CallbackLog>>("/api/callbacks?limit=80")
-  ]).then(([dashboard, accounts, orders, occupations, qrCodes, devices, notifications, systemLogs, callbacks]) => ({
+  ]).then(([dashboard, paymentAccounts, orders, occupations, qrCodes, devices, notifications, systemLogs, callbacks]) => ({
     dashboard,
-    accounts,
+    paymentAccounts,
     orders,
     occupations,
     qrCodes,
@@ -102,16 +104,16 @@ export function upsertQrCodes(input: BulkPresetQrCodeInput) {
   });
 }
 
-export function createAccount(input: { code: string; name: string; maxOffsetCents?: number; fallbackPayUrl?: string | null; alipayFallbackPayUrl?: string | null; wechatFallbackPayUrl?: string | null }) {
-  return request<Account>("/api/accounts", { method: "POST", body: JSON.stringify(input) });
+export function createPaymentAccount(input: CreatePaymentAccountInput) {
+  return request<PaymentAccount>("/api/payment-accounts", { method: "POST", body: JSON.stringify(input) });
 }
 
-export function setAccountEnabled(id: number, enabled: boolean) {
-  return request<Account>(`/api/accounts/${id}/enabled`, { method: "POST", body: JSON.stringify({ enabled }) });
+export function setPaymentAccountEnabled(id: number, enabled: boolean) {
+  return request<PaymentAccount>(`/api/payment-accounts/${id}/enabled`, { method: "POST", body: JSON.stringify({ enabled }) });
 }
 
-export function updateAccountSettings(id: number, input: { maxOffsetCents?: number; fallbackPayUrl?: string | null; alipayFallbackPayUrl?: string | null; wechatFallbackPayUrl?: string | null }) {
-  return request<Account>(`/api/accounts/${id}/settings`, { method: "POST", body: JSON.stringify(input) });
+export function updatePaymentAccountSettings(id: number, input: UpdatePaymentAccountInput) {
+  return request<PaymentAccount>(`/api/payment-accounts/${id}/settings`, { method: "POST", body: JSON.stringify(input) });
 }
 
 export function setDeviceEnabled(id: number, enabled: boolean) {

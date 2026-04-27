@@ -1,26 +1,26 @@
 import {
-  createAccount,
   createDeviceEnrollment,
   createOrder,
+  createPaymentAccount,
   dashboardStats,
   deletePresetQrCode,
   dispatchCallback,
   enrollAndroidDevice,
   getOrder,
   handleAndroidNotification,
-  listAccounts,
   listAmountOccupations,
   listCallbackLogs,
   listDevices,
   listNotificationLogs,
   listOrders,
+  listPaymentAccounts,
   listPresetQrCodes,
   listSystemLogs,
-  setAccountEnabled,
   setDeviceEnabled,
+  setPaymentAccountEnabled,
   touchDevice,
   updateOrderStatus,
-  updateAccountSettings,
+  updatePaymentAccountSettings,
   upsertPresetQrCodes,
   verifyAndroidRequest,
   type AppContext
@@ -87,21 +87,21 @@ export function createApiRoutes(ctx: AppContext) {
     "/api/dashboard": {
       GET: (req: Request) => withErrors(() => admin(ctx, req, () => json(dashboardStats(ctx))))
     },
-    "/api/accounts": {
-      GET: (req: Request) => withErrors(() => admin(ctx, req, () => json(listAccounts(ctx)))),
-      POST: (req: Request) => withErrors(async () => admin(ctx, req, async () => json(createAccount(ctx, await readJson(req)), { status: 201 })))
+    "/api/payment-accounts": {
+      GET: (req: Request) => withErrors(() => admin(ctx, req, () => json(listPaymentAccounts(ctx)))),
+      POST: (req: Request) => withErrors(async () => admin(ctx, req, async () => json(createPaymentAccount(ctx, await readJson(req)), { status: 201 })))
     },
-    "/api/accounts/:id/enabled": {
+    "/api/payment-accounts/:id/enabled": {
       POST: (req: RouteRequest<{ id: string }>) => withErrors(async () => {
         return admin(ctx, req, async () => {
           const body = await readJson<{ enabled: unknown }>(req);
-          return json(setAccountEnabled(ctx, Number(req.params.id), boolFromBody(body.enabled)));
+          return json(setPaymentAccountEnabled(ctx, Number(req.params.id), boolFromBody(body.enabled)));
         });
       })
     },
-    "/api/accounts/:id/settings": {
+    "/api/payment-accounts/:id/settings": {
       POST: (req: RouteRequest<{ id: string }>) => withErrors(async () => {
-        return admin(ctx, req, async () => json(updateAccountSettings(ctx, Number(req.params.id), await readJson(req))));
+        return admin(ctx, req, async () => json(updatePaymentAccountSettings(ctx, Number(req.params.id), await readJson(req))));
       })
     },
     "/api/orders": {
@@ -110,7 +110,8 @@ export function createApiRoutes(ctx: AppContext) {
         return json(listOrders(ctx, {
           ...pageOptions(url),
           status: url.searchParams.get("status") ?? undefined,
-          accountCode: url.searchParams.get("accountCode") ?? undefined
+          paymentAccountCode: url.searchParams.get("paymentAccountCode") ?? undefined,
+          paymentChannel: url.searchParams.get("paymentChannel") ?? url.searchParams.get("channel") ?? undefined
         }));
       })),
       POST: (req: Request) => withErrors(async () => {
@@ -134,7 +135,7 @@ export function createApiRoutes(ctx: AppContext) {
         const url = new URL(req.url);
         return json(listPresetQrCodes(ctx, {
           ...pageOptions(url),
-          accountCode: url.searchParams.get("accountCode") ?? undefined,
+          paymentAccountCode: url.searchParams.get("paymentAccountCode") ?? undefined,
           paymentChannel: url.searchParams.get("paymentChannel") ?? url.searchParams.get("channel") ?? undefined
         }));
       })),
@@ -142,10 +143,9 @@ export function createApiRoutes(ctx: AppContext) {
         return admin(ctx, req, async () => {
           const body = await readJson<BulkPresetQrCodeInput & { amount?: string | number; payUrl?: string }>(req);
           const result = upsertPresetQrCodes(ctx, Array.isArray(body.items) ? body : {
-            accountId: body.accountId,
-            accountCode: body.accountCode,
-            paymentChannel: body.paymentChannel ?? body.channel,
-            items: [{ paymentChannel: body.paymentChannel ?? body.channel, amount: body.amount ?? "", payUrl: body.payUrl ?? "" }]
+            paymentAccountId: body.paymentAccountId,
+            paymentAccountCode: body.paymentAccountCode,
+            items: [{ amount: body.amount ?? "", payUrl: body.payUrl ?? "" }]
           });
           return json(result, { status: 201 });
         });
@@ -159,7 +159,8 @@ export function createApiRoutes(ctx: AppContext) {
         const url = new URL(req.url);
         return json(listAmountOccupations(ctx, {
           ...pageOptions(url),
-          accountCode: url.searchParams.get("accountCode") ?? undefined
+          paymentAccountCode: url.searchParams.get("paymentAccountCode") ?? undefined,
+          paymentChannel: url.searchParams.get("paymentChannel") ?? url.searchParams.get("channel") ?? undefined
         }));
       }))
     },

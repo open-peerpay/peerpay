@@ -5,23 +5,24 @@ export type CallbackStatus = "pending" | "success" | "failed";
 export type PayMode = "preset" | "fallback";
 export type PaymentChannel = "wechat" | "alipay";
 
-export interface Account {
+export interface PaymentAccount {
   id: number;
   code: string;
   name: string;
+  paymentChannel: PaymentChannel;
+  priority: number;
   enabled: boolean;
   maxOffsetCents: number;
   maxOffset: string;
   fallbackPayUrl: string | null;
-  alipayFallbackPayUrl: string | null;
-  wechatFallbackPayUrl: string | null;
   createdAt: string;
 }
 
 export interface PresetQrCode {
   id: number;
-  accountId: number;
-  accountCode: string;
+  paymentAccountId: number;
+  paymentAccountCode: string;
+  paymentAccountName: string;
   paymentChannel: PaymentChannel;
   amount: string;
   amountCents: number;
@@ -32,12 +33,13 @@ export interface PresetQrCode {
 
 export interface AmountOccupation {
   orderId: string;
-  accountId: number;
-  accountCode: string;
+  paymentAccountId: number;
+  paymentAccountCode: string;
+  paymentAccountName: string;
+  paymentChannel: PaymentChannel;
   actualAmount: string;
   actualAmountCents: number;
   requestedAmount: string;
-  paymentChannel: PaymentChannel;
   status: OrderStatus;
   expireAt: string;
   payMode: PayMode;
@@ -46,13 +48,14 @@ export interface AmountOccupation {
 export interface Order {
   id: string;
   merchantOrderId: string | null;
-  accountId: number;
-  accountCode: string;
+  paymentAccountId: number;
+  paymentAccountCode: string;
+  paymentAccountName: string;
+  paymentChannel: PaymentChannel;
   requestedAmount: string;
   requestedAmountCents: number;
   actualAmount: string;
   actualAmountCents: number;
-  paymentChannel: PaymentChannel;
   payUrl: string;
   payMode: PayMode;
   amountInputRequired: boolean;
@@ -66,12 +69,18 @@ export interface Order {
   updatedAt: string;
 }
 
+export interface DevicePaymentAccount {
+  id: number;
+  code: string;
+  name: string;
+  paymentChannel: PaymentChannel;
+}
+
 export interface Device {
   id: number;
   deviceId: string;
   name: string | null;
-  accountId: number | null;
-  accountCode: string | null;
+  paymentAccounts: DevicePaymentAccount[];
   enabled: boolean;
   online: boolean;
   pairedAt: string | null;
@@ -84,10 +93,11 @@ export interface Device {
 
 export interface NotificationLog {
   id: number;
-  accountId: number;
-  accountCode: string;
-  deviceId: string | null;
+  paymentAccountId: number | null;
+  paymentAccountCode: string | null;
+  paymentAccountName: string | null;
   paymentChannel: PaymentChannel | null;
+  deviceId: string | null;
   packageName: string | null;
   channel: string | null;
   actualAmount: string | null;
@@ -148,8 +158,6 @@ export interface DashboardStats {
 
 export interface CreateOrderInput {
   amount: string | number;
-  accountId?: number;
-  accountCode?: string;
   paymentChannel?: PaymentChannel;
   channel?: PaymentChannel;
   merchantOrderId?: string;
@@ -161,8 +169,6 @@ export interface CreateOrderInput {
 
 export interface AndroidNotificationInput {
   deviceId?: string;
-  accountId?: number;
-  accountCode?: string;
   paymentChannel?: PaymentChannel;
   channel?: string;
   packageName?: string;
@@ -182,16 +188,18 @@ export interface HeartbeatInput {
 }
 
 export interface CreateDeviceEnrollmentInput {
-  accountId?: number;
-  accountCode?: string;
+  paymentAccountId?: number;
+  paymentAccountCode?: string;
   name?: string;
   ttlMinutes?: number;
 }
 
 export interface DeviceEnrollment {
   id: number;
-  accountId: number;
-  accountCode: string;
+  paymentAccountId: number;
+  paymentAccountCode: string;
+  paymentAccountName: string;
+  paymentChannel: PaymentChannel;
   name: string | null;
   token: string;
   pairingUrl: string;
@@ -212,30 +220,35 @@ export interface EnrollDeviceResult {
   deviceSecret: string;
 }
 
-export interface UpdateAccountSettingsInput {
+export interface CreatePaymentAccountInput {
+  code: string;
+  name: string;
+  paymentChannel: PaymentChannel;
+  priority?: number;
   maxOffsetCents?: number;
   fallbackPayUrl?: string | null;
-  alipayFallbackPayUrl?: string | null;
-  wechatFallbackPayUrl?: string | null;
+}
+
+export interface UpdatePaymentAccountInput {
+  code?: string;
+  name?: string;
+  paymentChannel?: PaymentChannel;
+  priority?: number;
+  maxOffsetCents?: number;
+  fallbackPayUrl?: string | null;
 }
 
 export interface UpsertPresetQrCodeInput {
-  accountId?: number;
-  accountCode?: string;
-  paymentChannel?: PaymentChannel;
-  channel?: PaymentChannel;
+  paymentAccountId?: number;
+  paymentAccountCode?: string;
   amount: string | number;
   payUrl: string;
 }
 
 export interface BulkPresetQrCodeInput {
-  accountId?: number;
-  accountCode?: string;
-  paymentChannel?: PaymentChannel;
-  channel?: PaymentChannel;
+  paymentAccountId?: number;
+  paymentAccountCode?: string;
   items: Array<{
-    paymentChannel?: PaymentChannel;
-    channel?: PaymentChannel;
     amount: string | number;
     payUrl: string;
   }>;
@@ -244,6 +257,6 @@ export interface BulkPresetQrCodeInput {
 export interface Page<T> {
   items: T[];
   total: number;
-  limit: number;
   offset: number;
+  limit: number;
 }

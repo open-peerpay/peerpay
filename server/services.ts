@@ -929,6 +929,12 @@ export function createOrder(ctx: AppContext, input: CreateOrderInput) {
   const now = nowIso();
   const expireAt = addMinutes(ttlMinutes);
   const id = createOrderId();
+  const callbackUrl = input.callbackUrl?.trim() || null;
+  const callbackSecret = input.callbackSecret?.trim() || null;
+
+  if (callbackUrl && !callbackSecret) {
+    throw apiError(400, "设置回调地址时必须提供 callbackSecret");
+  }
 
   const createTransaction = ctx.db.transaction(() => {
     const allocation = allocateActualAmount(ctx, paymentChannel, requestedAmount, now);
@@ -950,8 +956,8 @@ export function createOrder(ctx: AppContext, input: CreateOrderInput) {
       allocation.payMode,
       allocation.payMode === "fallback" ? 1 : 0,
       input.subject?.trim() || null,
-      input.callbackUrl?.trim() || null,
-      input.callbackSecret?.trim() || null,
+      callbackUrl,
+      callbackSecret,
       expireAt,
       now,
       now
@@ -1524,7 +1530,10 @@ export function listSystemLogs(
 function callbackPayload(ctx: AppContext, order: Order) {
   const secretRow = ctx.db.query("SELECT callback_secret FROM orders WHERE id = ?")
     .get(order.id) as { callback_secret: string | null } | null;
-  const secret = secretRow?.callback_secret || Bun.env.PEERPAY_WEBHOOK_SECRET || "";
+  const secret = secretRow?.callback_secret;
+  if (!secret) {
+    throw apiError(500, "订单回调密钥缺失");
+  }
   const payload = {
     orderId: order.id,
     merchantOrderId: order.merchantOrderId,

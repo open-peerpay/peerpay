@@ -162,4 +162,4 @@ bun run build      # Bun 生产构建
 
 ## 回调签名
 
-回调请求体包含 `sign` 字段，同时在 `x-peerpay-signature` 头里携带同一个签名。签名算法为 HMAC-SHA256，按字段名排序后拼接 `key=value` 计算，密钥优先使用订单的 `callbackSecret`，否则使用 `PEERPAY_WEBHOOK_SECRET`。回调 payload 会携带 `paymentChannel` 和 `paymentAccountCode`，便于上游排查实际收款账号。
+回调请求体包含 `sign` 字段，同时在 `x-peerpay-signature` 头里携带同一个签名。创建订单时如果传入 `callbackUrl`，必须同时传入 `callbackSecret`。签名算法为 HMAC-SHA256，按字段名排序后拼接 `key=value` 计算，密钥使用订单的 `callbackSecret`。回调 payload 会携带 `paymentChannel` 和 `paymentAccountCode`，便于上游排查实际收款账号。

@@ -98,6 +98,16 @@ test("rejects order creation when monitoring devices are offline", () => {
   })).toThrow("没有在线监控设备");
 });
 
+test("requires callback secret when callback url is provided", () => {
+  expect(() => createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "10.00",
+    merchantOrderId: "callback-without-secret",
+    callbackUrl: "https://merchant.example/webhook",
+    ttlMinutes: 10
+  })).toThrow("callbackSecret");
+});
+
 test("allocates same amount across payment accounts before offsetting", () => {
   const first = createOrder(ctx, {
     paymentChannel: "alipay",

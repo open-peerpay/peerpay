@@ -6,20 +6,26 @@ import {
   createOrder,
   createPaymentAccount,
   enrollAndroidDevice,
+  getPaymentPageSettings,
+  getPublicPaymentPage,
   handleAndroidNotification,
   listAmountOccupations,
   listNotificationLogs,
+  paymentPagePath,
   setPaymentAccountEnabled,
   signAndroidRequest,
   signPayload,
   updatePaymentAccountSettings,
+  updateOrderStatus,
+  updatePaymentPageSettings,
   upsertPresetQrCodes,
   verifyAndroidRequest,
   type AppContext
 } from "../server/services";
-import type { Device, EnrollDeviceResult, PaymentAccount } from "../src/shared/types";
+import type { Device, EnrollDeviceResult, Order, PaymentAccount, PaymentPageData } from "../src/shared/types";
 import { getAdminPath, getAdminSessionState, isSetupRequired, loginAdmin, setupAdminPassword } from "../server/auth";
 import { parseMoney } from "../server/money";
+import { createApiRoutes } from "../server/routes";
 
 let ctx: AppContext;
 let alipayA: PaymentAccount;
@@ -126,10 +132,12 @@ test("uses per-account preset qr codes and isolates payment channels", () => {
 
   expect(alipay.paymentAccountCode).toBe("alipay-a");
   expect(alipay.payMode).toBe("preset");
-  expect(alipay.payUrl).toBe("https://pay.example/alipay-a/12.00");
+  expect(alipay.payUrl).toBe(paymentPagePath(alipay.id));
+  expect(getPublicPaymentPage(ctx, alipay.id).targetPayUrl).toBe("https://pay.example/alipay-a/12.00");
   expect(wechat.paymentAccountCode).toBe("wechat-a");
   expect(wechat.payMode).toBe("preset");
-  expect(wechat.payUrl).toBe("https://pay.example/wechat-a/12.00");
+  expect(wechat.payUrl).toBe(paymentPagePath(wechat.id));
+  expect(getPublicPaymentPage(ctx, wechat.id).targetPayUrl).toBe("https://pay.example/wechat-a/12.00");
 });
 
 test("does not offset cent-level amounts but can use another account", () => {
@@ -169,7 +177,8 @@ test("skips payment accounts without preset qr code or fallback url", () => {
   });
 
   expect(order.paymentAccountCode).toBe("alipay-b");
-  expect(order.payUrl).toBe("https://pay.example/alipay-b");
+  expect(order.payUrl).toBe(paymentPagePath(order.id));
+  expect(getPublicPaymentPage(ctx, order.id).targetPayUrl).toBe("https://pay.example/alipay-b");
 });
 
 test("defaults payment account max offset to 10 cents", () => {
@@ -182,6 +191,112 @@ test("defaults payment account max offset to 10 cents", () => {
   expect(account.maxOffsetCents).toBe(10);
   expect(account.maxOffset).toBe("0.10");
   expect(account.priority).toBe(100);
+});
+
+test("accepts wxp pay urls for wechat fallback and preset qr codes", () => {
+  const account = createPaymentAccount(ctx, {
+    code: "wechat-wxp",
+    name: "微信 WXP",
+    paymentChannel: "wechat",
+    priority: 5,
+    maxOffsetCents: 10,
+    fallbackPayUrl: "wxp://fallback-wechat"
+  });
+
+  expect(account.fallbackPayUrl).toBe("wxp://fallback-wechat");
+
+  const fallbackOrder = createOrder(ctx, {
+    paymentChannel: "wechat",
+    amount: "14.00",
+    merchantOrderId: "wxp-fallback",
+    ttlMinutes: 10
+  });
+
+  expect(fallbackOrder.paymentAccountCode).toBe("wechat-wxp");
+  expect(fallbackOrder.payUrl).toBe(paymentPagePath(fallbackOrder.id));
+  expect(getPublicPaymentPage(ctx, fallbackOrder.id).targetPayUrl).toBe("wxp://fallback-wechat");
+
+  upsertPresetQrCodes(ctx, {
+    paymentAccountCode: "wechat-wxp",
+    items: [{ amount: "15.00", payUrl: "wxp://preset-wechat-1500" }]
+  });
+
+  const presetOrder = createOrder(ctx, {
+    paymentChannel: "wechat",
+    amount: "15.00",
+    merchantOrderId: "wxp-preset",
+    ttlMinutes: 10
+  });
+
+  expect(presetOrder.paymentAccountCode).toBe("wechat-wxp");
+  expect(presetOrder.payUrl).toBe(paymentPagePath(presetOrder.id));
+  expect(getPublicPaymentPage(ctx, presetOrder.id).targetPayUrl).toBe("wxp://preset-wechat-1500");
+
+  const updatedAccount = updatePaymentAccountSettings(ctx, account.id, {
+    fallbackPayUrl: "wxp://fallback-wechat-updated"
+  });
+
+  expect(updatedAccount?.fallbackPayUrl).toBe("wxp://fallback-wechat-updated");
+});
+
+test("exposes payment page data and configurable notice content", () => {
+  expect(getPaymentPageSettings(ctx).noticeEnabled).toBe(false);
+
+  updatePaymentPageSettings(ctx, {
+    noticeEnabled: true,
+    noticeTitle: "到账公告",
+    noticeBody: "夜间到账可能延迟，请以订单状态为准。",
+    noticeLinkText: "联系客服",
+    noticeLinkUrl: "https://merchant.example/support"
+  });
+
+  const order = createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "16.00",
+    merchantOrderId: "payment-page-settings",
+    subject: "测试订单",
+    ttlMinutes: 10
+  });
+  const page = getPublicPaymentPage(ctx, order.id);
+
+  expect(page.orderId).toBe(order.id);
+  expect(page.targetPayUrl).toBe("https://pay.example/alipay-a");
+  expect(page.payMode).toBe("fallback");
+  expect(page.amountInputRequired).toBe(true);
+  expect(page.notice).toEqual({
+    title: "到账公告",
+    body: "夜间到账可能延迟，请以订单状态为准。",
+    linkText: "联系客服",
+    linkUrl: "https://merchant.example/support"
+  });
+
+  updateOrderStatus(ctx, order.id, "paid");
+  expect(getPublicPaymentPage(ctx, order.id).status).toBe("paid");
+});
+
+test("order api returns an absolute payment page url", async () => {
+  const routes = createApiRoutes(ctx);
+  const response = await routes["/api/orders"].POST(new Request("https://peerpay.test/api/orders", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      paymentChannel: "alipay",
+      amount: "17.00",
+      merchantOrderId: "api-pay-page"
+    })
+  }));
+  const payload = await response.json() as { data: Order };
+
+  expect(payload.data.payUrl).toBe(`https://peerpay.test${paymentPagePath(payload.data.id)}`);
+
+  const publicResponse = await routes["/api/pay/:id"].GET(Object.assign(
+    new Request(`https://peerpay.test/api/pay/${payload.data.id}`),
+    { params: { id: payload.data.id } }
+  ));
+  const publicPayload = await publicResponse.json() as { data: PaymentPageData };
+
+  expect(publicPayload.data.orderId).toBe(payload.data.id);
+  expect(publicPayload.data.targetPayUrl).toBe("https://pay.example/alipay-a");
 });
 
 test("parses money into integer cents without floating point multiplication", () => {

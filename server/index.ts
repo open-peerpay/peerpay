@@ -14,6 +14,8 @@ export function startServer() {
     routes: {
       [adminPath]: dashboard as never,
       [`${adminPath}/`]: dashboard as never,
+      "/pay/:id": dashboard as never,
+      "/pay/:id/": dashboard as never,
       ...createApiRoutes(ctx)
     },
     fetch(req) {

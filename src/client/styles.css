@@ -177,9 +177,314 @@ body {
   word-break: break-all;
 }
 
+.pay-page {
+  min-height: 100vh;
+  color: #181a17;
+  background:
+    linear-gradient(rgba(24, 26, 23, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(24, 26, 23, 0.055) 1px, transparent 1px),
+    #f5f2ea;
+  background-size: 28px 28px;
+  font-family: "Avenir Next", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+}
+
+.pay-shell {
+  width: min(1160px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 40px 0 52px;
+}
+
+.pay-masthead {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 28px;
+  align-items: end;
+  margin-bottom: 22px;
+  border-bottom: 2px solid #1e221d;
+  padding-bottom: 18px;
+}
+
+.pay-eyebrow {
+  margin: 0 0 8px;
+  color: #06613f;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.pay-masthead h1 {
+  margin: 0;
+  color: #181a17;
+  font-size: clamp(36px, 6vw, 70px);
+  line-height: 0.94;
+  font-weight: 900;
+}
+
+.pay-masthead .ant-typography {
+  display: block;
+  max-width: 520px;
+  margin-top: 10px;
+  color: #656a60;
+  line-height: 1.7;
+}
+
+.pay-status-chip {
+  min-width: 180px;
+  border: 2px solid #1e221d;
+  background: #fffdf7;
+  padding: 12px 14px;
+  text-align: right;
+  box-shadow: 8px 8px 0 #181a17;
+}
+
+.pay-status-chip span,
+.pay-status-chip small {
+  display: block;
+  color: #656a60;
+  font-size: 12px;
+}
+
+.pay-status-chip strong {
+  display: block;
+  margin-top: 3px;
+  color: #181a17;
+  font-size: 22px;
+}
+
+.pay-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(340px, 1.05fr);
+  gap: 22px;
+  align-items: start;
+}
+
+.pay-panel {
+  border: 2px solid #1e221d;
+  border-radius: 0;
+  background: rgba(255, 253, 247, 0.96);
+  box-shadow: 0 22px 80px rgba(30, 34, 29, 0.16);
+  padding: 0;
+}
+
+.pay-panel-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  padding: 18px 20px;
+  border-bottom: 2px solid #1e221d;
+}
+
+.pay-panel-header h2 {
+  margin: 0;
+  color: #181a17;
+  font-size: 20px;
+  font-weight: 850;
+}
+
+.pay-panel-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 2px solid #1e221d;
+  background: #f0c84b;
+  font-weight: 900;
+}
+
+.pay-qr-panel {
+  min-height: 620px;
+  display: flex;
+  flex-direction: column;
+}
+
+.pay-qr-body,
+.pay-detail-body {
+  display: grid;
+  gap: 18px;
+  padding: 20px;
+}
+
+.pay-qr-stage {
+  width: min(100%, 380px);
+  aspect-ratio: 1;
+  margin: 2px auto 0;
+  border: 2px solid #1e221d;
+  display: grid;
+  place-items: center;
+  background: #ffffff;
+}
+
+.pay-qr-body .ant-btn {
+  height: 48px;
+  border: 2px solid #1e221d;
+  border-radius: 0;
+  background: #0b8f5a;
+  color: #ffffff;
+  box-shadow: 5px 5px 0 #181a17;
+  font-weight: 850;
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease,
+    background-color 120ms ease;
+}
+
+.pay-qr-body .ant-btn:not(:disabled):hover {
+  background: #06613f;
+  transform: translate(2px, 2px);
+  box-shadow: 3px 3px 0 #181a17;
+}
+
+.pay-qr-body .ant-btn:disabled {
+  border-color: #1e221d;
+  background: #ffffff;
+  color: #656a60;
+  box-shadow: none;
+  opacity: 0.55;
+}
+
+.pay-ready-note {
+  margin: 0;
+  padding: 14px 16px;
+  border-left: 6px solid #0b8f5a;
+  background: #effaf3;
+  line-height: 1.7;
+  font-weight: 700;
+}
+
+.pay-ready-note-warn {
+  border-left-color: #c68a12;
+  background: #fff7df;
+}
+
+.pay-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.pay-metrics div {
+  min-height: 78px;
+  border: 1px solid #d8d1bf;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.pay-metrics span {
+  display: block;
+  color: #656a60;
+  font-size: 12px;
+}
+
+.pay-metrics strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 15px;
+  word-break: break-all;
+}
+
+.pay-warning {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 12px;
+  border: 2px solid rgba(11, 143, 90, 0.45);
+  border-radius: 0;
+  background: #eff8f1;
+  padding: 14px;
+}
+
+.pay-warning-strong {
+  border-color: rgba(198, 138, 18, 0.45);
+  background: #fff7df;
+}
+
+.pay-warning-icon {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border: 2px solid #1e221d;
+  background: #f0c84b;
+  color: #181a17;
+  font-size: 19px;
+}
+
+.pay-warning-strong .pay-warning-icon {
+  background: #fff0ed;
+  color: #b63c34;
+}
+
+.pay-warning p,
+.pay-notice p {
+  margin: 6px 0 0;
+  line-height: 1.65;
+}
+
+.pay-facts {
+  margin: 0;
+  display: grid;
+  gap: 10px;
+  border-top: 0;
+}
+
+.pay-facts div {
+  display: grid;
+  grid-template-columns: 136px minmax(0, 1fr);
+  gap: 12px;
+  border: 1px solid #d8d1bf;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.pay-facts dt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #656a60;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.pay-facts dd {
+  margin: 0;
+  min-width: 0;
+  word-break: break-word;
+  font-weight: 700;
+}
+
+.pay-notice {
+  border: 2px solid #d8d1bf;
+  border-radius: 0;
+  padding: 14px;
+  background: #ffffff;
+  white-space: pre-wrap;
+}
+
+.pay-notice a {
+  display: inline-flex;
+  margin-top: 8px;
+  color: #06613f;
+  font-weight: 850;
+}
+
+.pay-loading {
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.pay-loading .pay-panel {
+  width: min(440px, 100%);
+  padding: 22px;
+}
+
 @media (max-width: 1100px) {
   .metrics-grid {
     grid-template-columns: repeat(2, minmax(180px, 1fr));
+  }
+
+  .pay-workspace {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -200,5 +505,32 @@ body {
 
   .pairing-result {
     grid-template-columns: 1fr;
+  }
+
+  .pay-shell {
+    width: min(100vw - 24px, 680px);
+    padding-top: 24px;
+  }
+
+  .pay-masthead {
+    grid-template-columns: 1fr;
+  }
+
+  .pay-status-chip {
+    text-align: left;
+    box-shadow: 5px 5px 0 #181a17;
+  }
+
+  .pay-masthead h1 {
+    font-size: clamp(34px, 13vw, 56px);
+  }
+
+  .pay-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .pay-facts div {
+    grid-template-columns: 1fr;
+    gap: 4px;
   }
 }

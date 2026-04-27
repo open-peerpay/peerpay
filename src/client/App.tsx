@@ -46,6 +46,8 @@ import type {
   NotificationLog,
   Order,
   OrderStatus,
+  PaymentPageData,
+  PaymentPageSettings,
   PaymentAccount,
   PaymentChannel,
   PresetQrCode,
@@ -57,6 +59,7 @@ import {
   createPaymentAccount,
   deleteQrCode,
   getAdminSession,
+  getPaymentPage,
   loadSnapshot,
   loginAdmin,
   logoutAdmin,
@@ -66,6 +69,7 @@ import {
   setupAdmin,
   updateOrderStatus,
   updatePaymentAccountSettings,
+  updatePaymentPageSettings,
   upsertQrCodes,
   type AdminSessionState,
   type Snapshot
@@ -85,6 +89,7 @@ const emptySnapshot: Snapshot = {
     amountPool: { occupied: 0, presetQrCodes: 0, fallbackAccounts: 0 },
     callbacks: { pending: 0, failed: 0 }
   },
+  paymentPageSettings: { noticeEnabled: false, noticeTitle: "", noticeBody: "", noticeLinkText: "", noticeLinkUrl: null },
   paymentAccounts: [],
   orders: { items: [], total: 0, limit: 80, offset: 0 },
   occupations: { items: [], total: 0, limit: 160, offset: 0 },
@@ -148,6 +153,9 @@ const statusText: Record<string, string> = {
   warn: "警告",
   error: "异常"
 };
+
+const PAYMENT_PAGE_POLL_MS = 3_000;
+const PAYMENT_PAGE_RETRY_MS = 5_000;
 
 const paymentChannelOptions = PAYMENT_CHANNEL_OPTIONS.map((option) => ({
   label: option.label,
@@ -267,6 +275,215 @@ export function AdminApp() {
   );
 }
 
+function paymentOrderIdFromPath() {
+  const [, prefix, orderId] = window.location.pathname.split("/");
+  return prefix === "pay" && orderId ? decodeURIComponent(orderId) : "";
+}
+
+function paymentQrStatus(status: OrderStatus) {
+  if (status === "expired") {
+    return "expired";
+  }
+  if (status === "paid" || status === "notified") {
+    return "scanned";
+  }
+  return "active";
+}
+
+function PaymentPageContent({ page }: { page: PaymentPageData }) {
+  const payable = page.status === "pending";
+  const needsExactInput = page.amountInputRequired;
+  const payTarget = page.targetPayUrl.startsWith("http") ? "_blank" : undefined;
+  const channelTone = page.paymentChannel === "wechat" ? "wechat" : "alipay";
+  const payModeText = page.payMode === "fallback" ? "通用码" : "定额码";
+  const statusLabel = statusText[page.status] ?? page.status;
+
+  return (
+    <main className="pay-page">
+      <section className="pay-shell">
+        <header className="pay-masthead">
+          <div>
+            <p className="pay-eyebrow">PeerPay / {PAYMENT_CHANNEL_LABELS[page.paymentChannel]} Cashier</p>
+            <Title>请支付 ¥{page.actualAmount}</Title>
+            <Text>{page.subject || "订单付款"}</Text>
+          </div>
+          <div className="pay-status-chip" aria-live="polite">
+            <span>当前状态</span>
+            <strong>{statusLabel}</strong>
+            <small>{payModeText}</small>
+          </div>
+        </header>
+
+        <section className="pay-workspace">
+          <div className={`pay-panel pay-qr-panel pay-terminal-${channelTone}`}>
+            <div className="pay-panel-header">
+              <h2>付款二维码</h2>
+              <span className="pay-panel-mark">01</span>
+            </div>
+            <div className="pay-qr-body">
+              <div className="pay-qr-stage">
+                <QRCode
+                  value={page.targetPayUrl}
+                  status={paymentQrStatus(page.status)}
+                  size={274}
+                  bordered={false}
+                  bgColor="#ffffff"
+                  color="#181a17"
+                />
+              </div>
+              <p className={needsExactInput ? "pay-ready-note pay-ready-note-warn" : "pay-ready-note"}>
+                {needsExactInput
+                  ? `请在付款应用中手动输入 ¥${page.actualAmount}，金额必须完全一致。`
+                  : "扫码后直接按页面金额付款即可，系统会自动匹配到账通知。"}
+              </p>
+              <Button
+                type="primary"
+                size="large"
+                block
+                href={payable ? page.targetPayUrl : undefined}
+                target={payTarget}
+                disabled={!payable}
+                icon={payable ? <SendOutlined /> : <CheckCircleOutlined />}
+              >
+                {payable ? "唤起付款应用" : statusLabel}
+              </Button>
+            </div>
+          </div>
+
+          <div className="pay-panel">
+            <div className="pay-panel-header">
+              <h2>订单信息</h2>
+              <span className="pay-panel-mark">02</span>
+            </div>
+            <div className="pay-detail-body">
+              <div className="pay-metrics">
+                <div>
+                  <span>付款方式</span>
+                  <strong>{PAYMENT_CHANNEL_LABELS[page.paymentChannel]}</strong>
+                </div>
+                <div>
+                  <span>订单金额</span>
+                  <strong>¥{page.requestedAmount}</strong>
+                </div>
+                <div>
+                  <span>收款模式</span>
+                  <strong>{payModeText}</strong>
+                </div>
+              </div>
+
+              <div className={needsExactInput ? "pay-warning pay-warning-strong" : "pay-warning"}>
+                <div className="pay-warning-icon">{needsExactInput ? <BellOutlined /> : <CheckCircleOutlined />}</div>
+                <div>
+                  <Text strong>{needsExactInput ? "请手动输入精确金额" : "金额已写入二维码"}</Text>
+                  <p>
+                    {needsExactInput
+                      ? `付款时必须填写 ¥${page.actualAmount}。付错、少付或多付，系统无法自动识别。`
+                      : "扫码后按页面金额付款即可，系统会按当前订单自动匹配到账通知。"}
+                  </p>
+                </div>
+              </div>
+
+              <dl className="pay-facts">
+                <div>
+                  <dt><WalletOutlined /> 收款账号</dt>
+                  <dd>{page.paymentAccountName} · {page.paymentAccountCode}</dd>
+                </div>
+                <div>
+                  <dt><ClockCircleOutlined /> 过期时间</dt>
+                  <dd>{formatDate(page.expireAt)}</dd>
+                </div>
+                {page.merchantOrderId ? (
+                  <div>
+                    <dt><FileSearchOutlined /> 商户单号</dt>
+                    <dd>{page.merchantOrderId}</dd>
+                  </div>
+                ) : null}
+              </dl>
+
+              {page.notice ? (
+                <aside className="pay-notice">
+                  {page.notice.title ? <Text strong>{page.notice.title}</Text> : null}
+                  {page.notice.body ? <p>{page.notice.body}</p> : null}
+                  {page.notice.linkUrl ? <a href={page.notice.linkUrl} target="_blank" rel="noreferrer">{page.notice.linkText || "查看详情"}</a> : null}
+                </aside>
+              ) : null}
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+  );
+}
+
+export function PaymentPageApp() {
+  const [page, setPage] = useState<PaymentPageData | null>(null);
+  const [error, setError] = useState("");
+  const orderId = paymentOrderIdFromPath();
+
+  useEffect(() => {
+    if (!orderId) {
+      setError("付款链接无效");
+      return;
+    }
+
+    document.title = "PeerPay 付款";
+    let cancelled = false;
+    let timer: number | undefined;
+
+    const loadPaymentPage = async () => {
+      try {
+        const nextPage = await getPaymentPage(orderId);
+        if (cancelled) {
+          return;
+        }
+        setPage(nextPage);
+        setError("");
+        if (nextPage.status === "pending") {
+          timer = window.setTimeout(loadPaymentPage, PAYMENT_PAGE_POLL_MS);
+        }
+      } catch (nextError) {
+        if (cancelled) {
+          return;
+        }
+        setError(nextError instanceof Error ? nextError.message : "付款页加载失败");
+        timer = window.setTimeout(loadPaymentPage, PAYMENT_PAGE_RETRY_MS);
+      }
+    };
+
+    void loadPaymentPage();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [orderId]);
+
+  return (
+    <ConfigProvider
+      theme={{
+        token: {
+          colorPrimary: "#0f6b55",
+          colorSuccess: "#16803c",
+          colorWarning: "#bd6f1d",
+          colorError: "#bd3f2a",
+          borderRadius: 8,
+          fontFamily: "Avenir Next, PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif"
+        }
+      }}
+    >
+      {page ? <PaymentPageContent page={page} /> : (
+        <main className="pay-page pay-loading">
+          <div className="pay-panel">
+            <Title level={3}>{error || "正在加载付款页"}</Title>
+            <Text type="secondary">{error ? "请检查付款链接，或联系商户重新创建订单。" : "请稍候"}</Text>
+          </div>
+        </main>
+      )}
+    </ConfigProvider>
+  );
+}
+
 interface ModalProps {
   paymentAccounts: PaymentAccount[];
   open: boolean;
@@ -311,7 +528,7 @@ function QrCodeModal({ paymentAccounts, open, onCancel, onRefresh }: ModalProps)
           <Select options={paymentAccountOptions} placeholder="选择收款账号" />
         </Form.Item>
         <Form.Item name="lines" label="二维码" rules={[{ required: true, message: "请输入二维码配置" }]}>
-          <TextArea rows={10} placeholder={"10.00 https://pay.example/10.00\n10.01 https://pay.example/10.01"} />
+          <TextArea rows={10} placeholder={"10.00 https://pay.example/10.00\n10.01 wxp://xxxxxxxxxxxx"} />
         </Form.Item>
       </Form>
     </Modal>
@@ -428,7 +645,7 @@ function PaymentAccountModal({ open, onCancel, onRefresh }: Omit<ModalProps, "pa
           <InputNumber min={0} max={9999} precision={0} className="full-width" />
         </Form.Item>
         <Form.Item name="fallbackPayUrl" label="兜底收款码 URL">
-          <Input allowClear />
+          <Input allowClear placeholder="支持 https://... 或 wxp://..." />
         </Form.Item>
       </Form>
     </Modal>
@@ -499,7 +716,65 @@ function PaymentAccountSettingsModal({ account, open, onCancel, onRefresh }: Pay
           <InputNumber min={0} max={9999} precision={0} className="full-width" />
         </Form.Item>
         <Form.Item name="fallbackPayUrl" label="兜底收款码 URL">
-          <Input allowClear />
+          <Input allowClear placeholder="支持 https://... 或 wxp://..." />
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+}
+
+interface PaymentPageSettingsModalProps {
+  settings: PaymentPageSettings;
+  open: boolean;
+  onCancel: () => void;
+  onRefresh: () => void;
+}
+
+function PaymentPageSettingsModal({ settings, open, onCancel, onRefresh }: PaymentPageSettingsModalProps) {
+  const [form] = Form.useForm();
+  const { message } = AntApp.useApp();
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      form.setFieldsValue(settings);
+    }
+  }, [form, open]);
+
+  const handleFinish = useCallback(async (values: PaymentPageSettings) => {
+    setSaving(true);
+    try {
+      await updatePaymentPageSettings({
+        ...values,
+        noticeLinkUrl: values.noticeLinkUrl || null
+      });
+      message.success("付款页配置已更新");
+      onCancel();
+      onRefresh();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "付款页配置更新失败");
+    } finally {
+      setSaving(false);
+    }
+  }, [message, onCancel, onRefresh]);
+
+  return (
+    <Modal title="付款页配置" open={open} confirmLoading={saving} destroyOnHidden okText="保存" cancelText="取消" onOk={form.submit} onCancel={onCancel}>
+      <Form form={form} layout="vertical" onFinish={handleFinish}>
+        <Form.Item name="noticeEnabled" label="公告位" valuePropName="checked">
+          <Switch checkedChildren="开" unCheckedChildren="关" />
+        </Form.Item>
+        <Form.Item name="noticeTitle" label="公告标题">
+          <Input allowClear maxLength={80} placeholder="例如：春节期间到账说明" />
+        </Form.Item>
+        <Form.Item name="noticeBody" label="公告内容">
+          <TextArea rows={4} maxLength={500} showCount placeholder="可填写活动、客服、到账延迟或风险提示等内容" />
+        </Form.Item>
+        <Form.Item name="noticeLinkText" label="链接文案">
+          <Input allowClear maxLength={40} placeholder="例如：查看详情" />
+        </Form.Item>
+        <Form.Item name="noticeLinkUrl" label="链接地址">
+          <Input allowClear placeholder="https://example.com/notice" />
         </Form.Item>
       </Form>
     </Modal>
@@ -561,6 +836,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
   const [qrOpen, setQrOpen] = useState(false);
   const [deviceEnrollOpen, setDeviceEnrollOpen] = useState(false);
   const [paymentAccountOpen, setPaymentAccountOpen] = useState(false);
+  const [paymentPageSettingsOpen, setPaymentPageSettingsOpen] = useState(false);
   const [settingsPaymentAccount, setSettingsPaymentAccount] = useState<PaymentAccount | null>(null);
 
   const refresh = useCallback(async () => {
@@ -771,6 +1047,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
       <Button type="primary" icon={<MobileOutlined />} onClick={() => setDeviceEnrollOpen(true)}>设备配对</Button>
       <Button icon={<DatabaseOutlined />} onClick={() => setQrOpen(true)}>二维码</Button>
       <Button icon={<ApiOutlined />} onClick={() => setPaymentAccountOpen(true)}>收款账号</Button>
+      <Button icon={<SettingOutlined />} onClick={() => setPaymentPageSettingsOpen(true)}>付款页</Button>
       <Tooltip title="刷新">
         <Button icon={<ReloadOutlined />} loading={loading || isPending} onClick={refresh} />
       </Tooltip>
@@ -867,6 +1144,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
       <DeviceEnrollmentModal paymentAccounts={snapshot.paymentAccounts} open={deviceEnrollOpen} onCancel={() => setDeviceEnrollOpen(false)} onRefresh={refresh} />
       <PaymentAccountModal open={paymentAccountOpen} onCancel={() => setPaymentAccountOpen(false)} onRefresh={refresh} />
       <PaymentAccountSettingsModal account={settingsPaymentAccount} open={Boolean(settingsPaymentAccount)} onCancel={() => setSettingsPaymentAccount(null)} onRefresh={refresh} />
+      <PaymentPageSettingsModal settings={snapshot.paymentPageSettings} open={paymentPageSettingsOpen} onCancel={() => setPaymentPageSettingsOpen(false)} onRefresh={refresh} />
     </Layout>
   );
 }

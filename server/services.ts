@@ -25,17 +25,21 @@ import type {
   Order,
   OrderStatus,
   Page,
+  PaymentPageData,
+  PaymentPageSettings,
   PayMode,
   PaymentAccount,
   PaymentChannel,
   PresetQrCode,
   SystemLog,
-  UpdatePaymentAccountInput
+  UpdatePaymentAccountInput,
+  UpdatePaymentPageSettingsInput
 } from "../src/shared/types";
 
 const DEFAULT_ORDER_TTL_MINUTES = 15;
 const DEVICE_ONLINE_WINDOW_MS = 2 * 60 * 1000;
 const MAX_CALLBACK_ATTEMPTS = 5;
+const PAYMENT_PAGE_SETTINGS_KEY = "payment_page_settings";
 const PAYMENT_CHANNEL_ALIASES: Record<string, PaymentChannel> = {
   alipay: "alipay",
   ali: "alipay",
@@ -46,6 +50,14 @@ const PAYMENT_CHANNEL_ALIASES: Record<string, PaymentChannel> = {
   wx: "wechat",
   "微信": "wechat",
   "com.tencent.mm": "wechat"
+};
+
+const DEFAULT_PAYMENT_PAGE_SETTINGS: PaymentPageSettings = {
+  noticeEnabled: false,
+  noticeTitle: "",
+  noticeBody: "",
+  noticeLinkText: "",
+  noticeLinkUrl: null
 };
 
 type RowBool = 0 | 1;
@@ -200,6 +212,10 @@ function createOrderId() {
   return `ord_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
 }
 
+export function paymentPagePath(orderId: string) {
+  return `/pay/${encodeURIComponent(orderId)}`;
+}
+
 function createSecret(bytes = 32) {
   return randomBytes(bytes).toString("base64url");
 }
@@ -255,7 +271,7 @@ function mapOrder(row: OrderRow): Order {
     requestedAmountCents: row.requested_amount_cents,
     actualAmount: formatMoney(row.actual_amount_cents) ?? "0.00",
     actualAmountCents: row.actual_amount_cents,
-    payUrl: row.pay_url,
+    payUrl: paymentPagePath(row.id),
     payMode: row.pay_mode,
     amountInputRequired: row.amount_input_required === 1,
     status: row.status,
@@ -456,6 +472,8 @@ function inferPaymentChannel(input: AndroidNotificationInput, rawText: string) {
   return DEFAULT_PAYMENT_CHANNEL;
 }
 
+const ALLOWED_PAY_URL_PROTOCOLS = new Set(["http:", "https:", "wxp:"]);
+
 function normalizePayUrl(value: string | null | undefined, optional = false) {
   const text = value?.trim() ?? "";
   if (!text) {
@@ -467,13 +485,132 @@ function normalizePayUrl(value: string | null | undefined, optional = false) {
 
   try {
     const url = new URL(text);
+    if (!ALLOWED_PAY_URL_PROTOCOLS.has(url.protocol)) {
+      throw new Error("invalid protocol");
+    }
+    return url.toString();
+  } catch {
+    throw apiError(400, "付款 URL 必须是有效的 http/https/wxp 地址");
+  }
+}
+
+function normalizeOptionalHttpUrl(value: string | null | undefined) {
+  const text = value?.trim() ?? "";
+  if (!text) {
+    return null;
+  }
+
+  try {
+    const url = new URL(text);
     if (url.protocol !== "http:" && url.protocol !== "https:") {
       throw new Error("invalid protocol");
     }
     return url.toString();
   } catch {
-    throw apiError(400, "付款 URL 必须是有效的 http/https 地址");
+    throw apiError(400, "公告链接必须是有效的 http/https 地址");
   }
+}
+
+function textWithin(value: string | null | undefined, label: string, maxLength: number) {
+  const text = `${value ?? ""}`.trim();
+  if (text.length > maxLength) {
+    throw apiError(400, `${label}不能超过 ${maxLength} 个字符`);
+  }
+  return text;
+}
+
+function appSetting(ctx: AppContext, key: string) {
+  const row = ctx.db.query("SELECT value FROM app_settings WHERE key = ?").get(key) as { value: string } | null;
+  return row?.value ?? null;
+}
+
+function setAppSetting(ctx: AppContext, key: string, value: string) {
+  ctx.db.query(`
+    INSERT INTO app_settings(key, value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `).run(key, value, nowIso());
+}
+
+function normalizePaymentPageSettingsInput(
+  input: UpdatePaymentPageSettingsInput = {},
+  fallback: PaymentPageSettings = DEFAULT_PAYMENT_PAGE_SETTINGS
+): PaymentPageSettings {
+  const source = { ...fallback, ...input };
+  const noticeTitle = textWithin(source.noticeTitle, "公告标题", 80);
+  const noticeBody = textWithin(source.noticeBody, "公告内容", 500);
+  const noticeLinkUrl = normalizeOptionalHttpUrl(source.noticeLinkUrl);
+  const noticeLinkText = noticeLinkUrl ? textWithin(source.noticeLinkText || "查看详情", "公告链接文案", 40) : "";
+  const noticeEnabled = Boolean(source.noticeEnabled);
+
+  if (noticeEnabled && !noticeTitle && !noticeBody) {
+    throw apiError(400, "启用公告位时请填写公告标题或内容");
+  }
+
+  return {
+    noticeEnabled,
+    noticeTitle,
+    noticeBody,
+    noticeLinkText,
+    noticeLinkUrl
+  };
+}
+
+export function getPaymentPageSettings(ctx: AppContext): PaymentPageSettings {
+  const value = appSetting(ctx, PAYMENT_PAGE_SETTINGS_KEY);
+  if (!value) {
+    return { ...DEFAULT_PAYMENT_PAGE_SETTINGS };
+  }
+
+  try {
+    return normalizePaymentPageSettingsInput(JSON.parse(value) as UpdatePaymentPageSettingsInput);
+  } catch {
+    return { ...DEFAULT_PAYMENT_PAGE_SETTINGS };
+  }
+}
+
+export function updatePaymentPageSettings(ctx: AppContext, input: UpdatePaymentPageSettingsInput = {}) {
+  const settings = normalizePaymentPageSettingsInput(input, getPaymentPageSettings(ctx));
+  setAppSetting(ctx, PAYMENT_PAGE_SETTINGS_KEY, JSON.stringify(settings));
+  logSystem(ctx, "info", "payment_page.settings_updated", "付款页配置已更新", {
+    noticeEnabled: settings.noticeEnabled
+  });
+  return settings;
+}
+
+export function getPublicPaymentPage(ctx: AppContext, id: string): PaymentPageData {
+  releaseExpiredLocks(ctx);
+  const row = ctx.db.query(orderSelectSql("WHERE o.id = ?")).get(id) as OrderRow | null;
+  if (!row) {
+    throw apiError(404, "订单不存在");
+  }
+
+  const settings = getPaymentPageSettings(ctx);
+  const notice = settings.noticeEnabled && (settings.noticeTitle || settings.noticeBody)
+    ? {
+        title: settings.noticeTitle,
+        body: settings.noticeBody,
+        linkText: settings.noticeLinkText,
+        linkUrl: settings.noticeLinkUrl
+      }
+    : null;
+
+  return {
+    orderId: row.id,
+    merchantOrderId: row.merchant_order_id,
+    paymentAccountName: row.payment_account_name,
+    paymentAccountCode: row.payment_account_code,
+    paymentChannel: row.payment_channel,
+    requestedAmount: formatMoney(row.requested_amount_cents) ?? "0.00",
+    actualAmount: formatMoney(row.actual_amount_cents) ?? "0.00",
+    targetPayUrl: row.pay_url,
+    payMode: row.pay_mode,
+    amountInputRequired: row.amount_input_required === 1,
+    status: row.status,
+    subject: row.subject,
+    expireAt: row.expire_at,
+    notice
+  };
 }
 
 function orderSelectSql(where: string) {

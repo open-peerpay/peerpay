@@ -6,7 +6,9 @@ import {
   deletePresetQrCode,
   dispatchCallback,
   enrollAndroidDevice,
+  getPaymentPageSettings,
   getOrder,
+  getPublicPaymentPage,
   handleAndroidNotification,
   listAmountOccupations,
   listCallbackLogs,
@@ -16,11 +18,13 @@ import {
   listPaymentAccounts,
   listPresetQrCodes,
   listSystemLogs,
+  paymentPagePath,
   setDeviceEnabled,
   setPaymentAccountEnabled,
   touchDevice,
   updateOrderStatus,
   updatePaymentAccountSettings,
+  updatePaymentPageSettings,
   upsertPresetQrCodes,
   verifyAndroidRequest,
   type AppContext
@@ -40,6 +44,7 @@ import type {
   CreateOrderInput,
   EnrollDeviceInput,
   HeartbeatInput,
+  Order,
   OrderStatus
 } from "../src/shared/types";
 
@@ -57,6 +62,17 @@ function pairingUrl(req: Request, token: string) {
   const url = new URL("/api/android/enroll", baseUrl || req.url);
   url.searchParams.set("token", token);
   return url.toString();
+}
+
+function publicUrl(req: Request, path: string) {
+  return new URL(path, Bun.env.PEERPAY_PUBLIC_URL?.trim() || req.url).toString();
+}
+
+function publicOrder(req: Request, order: Order) {
+  return {
+    ...order,
+    payUrl: publicUrl(req, paymentPagePath(order.id))
+  };
 }
 
 export function createApiRoutes(ctx: AppContext) {
@@ -87,6 +103,10 @@ export function createApiRoutes(ctx: AppContext) {
     "/api/dashboard": {
       GET: (req: Request) => withErrors(() => admin(ctx, req, () => json(dashboardStats(ctx))))
     },
+    "/api/settings/payment-page": {
+      GET: (req: Request) => withErrors(() => admin(ctx, req, () => json(getPaymentPageSettings(ctx)))),
+      POST: (req: Request) => withErrors(async () => admin(ctx, req, async () => json(updatePaymentPageSettings(ctx, await readJson(req)))))
+    },
     "/api/payment-accounts": {
       GET: (req: Request) => withErrors(() => admin(ctx, req, () => json(listPaymentAccounts(ctx)))),
       POST: (req: Request) => withErrors(async () => admin(ctx, req, async () => json(createPaymentAccount(ctx, await readJson(req)), { status: 201 })))
@@ -107,20 +127,27 @@ export function createApiRoutes(ctx: AppContext) {
     "/api/orders": {
       GET: (req: Request) => withErrors(() => admin(ctx, req, () => {
         const url = new URL(req.url);
-        return json(listOrders(ctx, {
+        const page = listOrders(ctx, {
           ...pageOptions(url),
           status: url.searchParams.get("status") ?? undefined,
           paymentAccountCode: url.searchParams.get("paymentAccountCode") ?? undefined,
           paymentChannel: url.searchParams.get("paymentChannel") ?? url.searchParams.get("channel") ?? undefined
-        }));
+        });
+        return json({ ...page, items: page.items.map((order) => publicOrder(req, order)) });
       })),
       POST: (req: Request) => withErrors(async () => {
         const order = createOrder(ctx, await readJson<CreateOrderInput>(req));
-        return json(order, { status: 201 });
+        return json(publicOrder(req, order), { status: 201 });
       })
     },
     "/api/orders/:id": {
-      GET: (req: RouteRequest<{ id: string }>) => withErrors(() => admin(ctx, req, () => json(getOrder(ctx, req.params.id))))
+      GET: (req: RouteRequest<{ id: string }>) => withErrors(() => admin(ctx, req, () => {
+        const order = getOrder(ctx, req.params.id);
+        return json(order ? publicOrder(req, order) : null);
+      }))
+    },
+    "/api/pay/:id": {
+      GET: (req: RouteRequest<{ id: string }>) => withErrors(() => json(getPublicPaymentPage(ctx, req.params.id)))
     },
     "/api/orders/:id/status": {
       POST: (req: RouteRequest<{ id: string }>) => withErrors(async () => {

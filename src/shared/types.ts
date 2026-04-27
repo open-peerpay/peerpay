@@ -69,6 +69,38 @@ export interface Order {
   updatedAt: string;
 }
 
+export interface PaymentPageSettings {
+  noticeEnabled: boolean;
+  noticeTitle: string;
+  noticeBody: string;
+  noticeLinkText: string;
+  noticeLinkUrl: string | null;
+}
+
+export interface PaymentPageNotice {
+  title: string;
+  body: string;
+  linkText: string;
+  linkUrl: string | null;
+}
+
+export interface PaymentPageData {
+  orderId: string;
+  merchantOrderId: string | null;
+  paymentAccountName: string;
+  paymentAccountCode: string;
+  paymentChannel: PaymentChannel;
+  requestedAmount: string;
+  actualAmount: string;
+  targetPayUrl: string;
+  payMode: PayMode;
+  amountInputRequired: boolean;
+  status: OrderStatus;
+  subject: string | null;
+  expireAt: string;
+  notice: PaymentPageNotice | null;
+}
+
 export interface DevicePaymentAccount {
   id: number;
   code: string;
@@ -237,6 +269,8 @@ export interface UpdatePaymentAccountInput {
   maxOffsetCents?: number;
   fallbackPayUrl?: string | null;
 }
+
+export type UpdatePaymentPageSettingsInput = Partial<PaymentPageSettings>;
 
 export interface UpsertPresetQrCodeInput {
   paymentAccountId?: number;

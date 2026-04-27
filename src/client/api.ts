@@ -11,10 +11,13 @@ import type {
   Order,
   OrderStatus,
   Page,
+  PaymentPageData,
+  PaymentPageSettings,
   PaymentAccount,
   PresetQrCode,
   SystemLog,
-  UpdatePaymentAccountInput
+  UpdatePaymentAccountInput,
+  UpdatePaymentPageSettingsInput
 } from "../shared/types";
 
 export interface AdminSessionState {
@@ -54,6 +57,7 @@ async function request<T>(path: string, init: RequestInit = {}) {
 export function loadSnapshot() {
   return Promise.all([
     request<DashboardStats>("/api/dashboard"),
+    request<PaymentPageSettings>("/api/settings/payment-page"),
     request<PaymentAccount[]>("/api/payment-accounts"),
     request<Page<Order>>("/api/orders?limit=80"),
     request<Page<AmountOccupation>>("/api/amount-occupations?limit=160"),
@@ -62,8 +66,9 @@ export function loadSnapshot() {
     request<Page<NotificationLog>>("/api/logs/notifications?limit=80"),
     request<Page<SystemLog>>("/api/logs/system?limit=80"),
     request<Page<CallbackLog>>("/api/callbacks?limit=80")
-  ]).then(([dashboard, paymentAccounts, orders, occupations, qrCodes, devices, notifications, systemLogs, callbacks]) => ({
+  ]).then(([dashboard, paymentPageSettings, paymentAccounts, orders, occupations, qrCodes, devices, notifications, systemLogs, callbacks]) => ({
     dashboard,
+    paymentPageSettings,
     paymentAccounts,
     orders,
     occupations,
@@ -114,6 +119,14 @@ export function setPaymentAccountEnabled(id: number, enabled: boolean) {
 
 export function updatePaymentAccountSettings(id: number, input: UpdatePaymentAccountInput) {
   return request<PaymentAccount>(`/api/payment-accounts/${id}/settings`, { method: "POST", body: JSON.stringify(input) });
+}
+
+export function updatePaymentPageSettings(input: UpdatePaymentPageSettingsInput) {
+  return request<PaymentPageSettings>("/api/settings/payment-page", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function getPaymentPage(orderId: string) {
+  return request<PaymentPageData>(`/api/pay/${encodeURIComponent(orderId)}`);
 }
 
 export function setDeviceEnabled(id: number, enabled: boolean) {

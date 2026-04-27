@@ -1,6 +1,14 @@
 # PeerPay
 
-PeerPay 是一个 Bun + SQLite + React + Ant Design 的轻量级收款服务骨架。服务端按 Bun fullstack dev server 形态运行：同一个 Bun 进程同时提供管理台 HTML、React bundle 和 `/api/*` 路由。
+PeerPay Backend 是 PeerPay 的后端服务，负责订单创建、金额分配、设备配对、到账上报匹配和回调通知。服务端按 Bun fullstack dev server 形态运行：同一个 Bun 进程同时提供管理台 HTML、React bundle 和 `/api/*` 路由。
+
+## 相关仓库
+
+| 仓库 | 说明 |
+| --- | --- |
+| [peerpay](https://github.com/open-peerpay/peerpay) | 后端服务和管理台，也就是当前仓库 |
+| [peerpay-edge-android](https://github.com/open-peerpay/peerpay-edge-android) | 安卓收款监听端，扫码配对后上报到账通知 |
+| [peerpay-store-examples](https://github.com/open-peerpay/peerpay-store-examples) | 商品后台示例，用于联调创建订单、展示付款 URL、接收回调和更新订单状态 |
 
 ## 快速开始
 

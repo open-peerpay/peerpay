@@ -10,10 +10,8 @@ import {
   getPublicPaymentPage,
   handleAndroidNotification,
   listAmountOccupations,
-  listDevices,
   listNotificationLogs,
   paymentPagePath,
-  setDeviceEnabled,
   setPaymentAccountEnabled,
   signAndroidRequest,
   signPayload,
@@ -83,19 +81,17 @@ function enrollTestDevice(paymentAccountCode = "alipay-a", deviceId = "android-m
   });
 }
 
-test("rejects order creation when monitoring devices are offline", () => {
-  for (const device of listDevices(ctx)) {
-    if (device.paymentAccounts.some((account) => account.paymentChannel === "alipay")) {
-      setDeviceEnabled(ctx, device.id, false);
-    }
-  }
+test("allows order creation when monitoring devices are offline", () => {
+  ctx.db.query("UPDATE devices SET last_seen_at = ?").run(new Date(0).toISOString());
 
-  expect(() => createOrder(ctx, {
+  const order = createOrder(ctx, {
     paymentChannel: "alipay",
     amount: "10.00",
     merchantOrderId: "offline-device",
     ttlMinutes: 10
-  })).toThrow("没有在线监控设备");
+  });
+
+  expect(order.paymentAccountCode).toBe("alipay-a");
 });
 
 test("requires callback secret when callback url is provided", () => {

@@ -10,8 +10,10 @@ import {
   getPublicPaymentPage,
   handleAndroidNotification,
   listAmountOccupations,
+  listDevices,
   listNotificationLogs,
   paymentPagePath,
+  setDeviceEnabled,
   setPaymentAccountEnabled,
   signAndroidRequest,
   signPayload,
@@ -58,6 +60,9 @@ beforeEach(() => {
     maxOffsetCents: 10,
     fallbackPayUrl: "https://pay.example/wechat-a"
   });
+  enrollTestDevice("alipay-a", "android-alipay-a");
+  enrollTestDevice("alipay-b", "android-alipay-b");
+  enrollTestDevice("wechat-a", "android-wechat-a");
 });
 
 afterEach(() => {
@@ -77,6 +82,21 @@ function enrollTestDevice(paymentAccountCode = "alipay-a", deviceId = "android-m
     appVersion: "0.1.0"
   });
 }
+
+test("rejects order creation when monitoring devices are offline", () => {
+  for (const device of listDevices(ctx)) {
+    if (device.paymentAccounts.some((account) => account.paymentChannel === "alipay")) {
+      setDeviceEnabled(ctx, device.id, false);
+    }
+  }
+
+  expect(() => createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "10.00",
+    merchantOrderId: "offline-device",
+    ttlMinutes: 10
+  })).toThrow("没有在线监控设备");
+});
 
 test("allocates same amount across payment accounts before offsetting", () => {
   const first = createOrder(ctx, {
@@ -204,6 +224,7 @@ test("accepts wxp pay urls for wechat fallback and preset qr codes", () => {
   });
 
   expect(account.fallbackPayUrl).toBe("wxp://fallback-wechat");
+  enrollTestDevice("wechat-wxp", "android-wechat-wxp");
 
   const fallbackOrder = createOrder(ctx, {
     paymentChannel: "wechat",

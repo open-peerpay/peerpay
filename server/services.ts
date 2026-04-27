@@ -836,13 +836,23 @@ export function deletePresetQrCode(ctx: AppContext, id: number) {
   return mapPresetQrCode(row);
 }
 
-function enabledPaymentAccountRows(ctx: AppContext, paymentChannel: PaymentChannel) {
+function enabledPaymentAccountRows(ctx: AppContext, paymentChannel: PaymentChannel, now: string) {
+  const onlineThreshold = new Date(Date.parse(now) - DEVICE_ONLINE_WINDOW_MS).toISOString();
   return ctx.db.query(`
-    SELECT *
-    FROM payment_accounts
-    WHERE payment_channel = ? AND enabled = 1
+    SELECT pa.*
+    FROM payment_accounts pa
+    WHERE pa.payment_channel = ?
+      AND pa.enabled = 1
+      AND EXISTS (
+        SELECT 1
+        FROM device_payment_accounts dpa
+        JOIN devices d ON d.device_id = dpa.device_id
+        WHERE dpa.payment_account_id = pa.id
+          AND d.enabled = 1
+          AND d.last_seen_at >= ?
+      )
     ORDER BY priority ASC, id ASC
-  `).all(paymentChannel) as PaymentAccountRow[];
+  `).all(paymentChannel, onlineThreshold) as PaymentAccountRow[];
 }
 
 function findPresetQrCode(ctx: AppContext, paymentAccountId: number, amountCents: number) {
@@ -858,9 +868,9 @@ function allocateActualAmount(
   requestedAmount: number,
   now: string
 ) {
-  const accounts = enabledPaymentAccountRows(ctx, paymentChannel);
+  const accounts = enabledPaymentAccountRows(ctx, paymentChannel, now);
   if (accounts.length === 0) {
-    throw apiError(409, "没有可用收款账号");
+    throw apiError(409, "没有在线监控设备可用，暂不允许创建订单");
   }
 
   const maxOffsetCents = requestedAmount % 100 === 0

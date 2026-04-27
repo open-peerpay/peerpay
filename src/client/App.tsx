@@ -499,13 +499,6 @@ function QrCodeModal({ paymentAccounts, open, onCancel, onRefresh }: ModalProps)
     label: `${PAYMENT_CHANNEL_LABELS[account.paymentChannel]} · ${account.name} (${account.code})`,
     value: account.code
   })), [paymentAccounts]);
-  const pairingUrl = useMemo(() => {
-    if (!enrollment) {
-      return "";
-    }
-
-    return new URL(enrollment.pairingUrl, window.location.origin).toString();
-  }, [enrollment]);
 
   const handleFinish = useCallback(async (values: { paymentAccountCode: string; lines: string }) => {
     const items = normalizeQrLines(values.lines);
@@ -551,6 +544,13 @@ function DeviceEnrollmentModal({ paymentAccounts, open, onCancel, onRefresh }: M
     label: `${PAYMENT_CHANNEL_LABELS[account.paymentChannel]} · ${account.name} (${account.code})`,
     value: account.code
   })), [paymentAccounts]);
+  const pairingUrl = useMemo(() => {
+    if (!enrollment) {
+      return "";
+    }
+
+    return new URL(enrollment.pairingUrl, window.location.origin).toString();
+  }, [enrollment]);
 
   useEffect(() => {
     if (!open) {

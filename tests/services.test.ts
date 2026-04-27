@@ -326,6 +326,27 @@ test("order api returns an absolute payment page url", async () => {
   expect(publicPayload.data.targetPayUrl).toBe("https://pay.example/alipay-a");
 });
 
+test("device enrollment api returns a pairing path", async () => {
+  const routes = createApiRoutes(ctx);
+  await setupAdminPassword(ctx, "strong-password");
+  const cookie = await loginAdmin(ctx, "strong-password");
+  const response = await routes["/api/device-enrollments"].POST(new Request("http://pay.auair.cn/api/device-enrollments", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "cookie": cookie
+    },
+    body: JSON.stringify({
+      paymentAccountCode: "alipay-a",
+      name: "主收款机",
+      ttlMinutes: 10
+    })
+  }));
+  const payload = await response.json() as { data: { pairingUrl: string } };
+
+  expect(payload.data.pairingUrl).toStartWith("/api/android/enroll?token=");
+});
+
 test("parses money into integer cents without floating point multiplication", () => {
   expect(parseMoney("10.01")).toBe(1001);
   expect(parseMoney(10.01)).toBe(1001);

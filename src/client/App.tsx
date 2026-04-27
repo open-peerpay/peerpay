@@ -499,6 +499,13 @@ function QrCodeModal({ paymentAccounts, open, onCancel, onRefresh }: ModalProps)
     label: `${PAYMENT_CHANNEL_LABELS[account.paymentChannel]} · ${account.name} (${account.code})`,
     value: account.code
   })), [paymentAccounts]);
+  const pairingUrl = useMemo(() => {
+    if (!enrollment) {
+      return "";
+    }
+
+    return new URL(enrollment.pairingUrl, window.location.origin).toString();
+  }, [enrollment]);
 
   const handleFinish = useCallback(async (values: { paymentAccountCode: string; lines: string }) => {
     const items = normalizeQrLines(values.lines);
@@ -591,10 +598,10 @@ function DeviceEnrollmentModal({ paymentAccounts, open, onCancel, onRefresh }: M
       </Form>
       {enrollment ? (
         <div className="pairing-result">
-          <QRCode value={enrollment.pairingUrl} size={220} />
+          <QRCode value={pairingUrl} size={220} />
           <div className="pairing-copy">
             <Text strong>配对 URL</Text>
-            <Text copyable className="break-text">{enrollment.pairingUrl}</Text>
+            <Text copyable className="break-text">{pairingUrl}</Text>
             <Text type="secondary">通用 APK 扫描这个二维码后，会连接到当前私有服务器并完成配对。</Text>
           </div>
         </div>

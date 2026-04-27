@@ -57,10 +57,10 @@ function admin<T extends Request>(ctx: AppContext, req: T, handler: () => Respon
   return handler();
 }
 
-function pairingUrl(req: Request, token: string) {
-  const url = new URL("/api/android/enroll", req.url);
+function pairingUrl(token: string) {
+  const url = new URL("/api/android/enroll", "http://peerpay.local");
   url.searchParams.set("token", token);
-  return url.toString();
+  return `${url.pathname}${url.search}`;
 }
 
 function publicUrl(req: Request, path: string) {
@@ -221,7 +221,7 @@ export function createApiRoutes(ctx: AppContext) {
     "/api/device-enrollments": {
       POST: (req: Request) => withErrors(async () => admin(ctx, req, async () => {
         const enrollment = createDeviceEnrollment(ctx, await readJson<CreateDeviceEnrollmentInput>(req));
-        return json({ ...enrollment, pairingUrl: pairingUrl(req, enrollment.token) }, { status: 201 });
+        return json({ ...enrollment, pairingUrl: pairingUrl(enrollment.token) }, { status: 201 });
       }))
     },
     "/api/devices/:id/enabled": {

@@ -31,11 +31,7 @@ PeerPay admin path: http://localhost:3000/a1b2c3d
 ADMIN_PATH=/peerpay1 bun run dev
 ```
 
-设备配对二维码默认按当前请求地址生成。反向代理或内网部署时，如果 APK 需要访问另一个公网地址，可以显式配置：
-
-```bash
-PEERPAY_PUBLIC_URL=https://pay.example.com bun run dev
-```
+设备配对二维码和订单支付页 URL 默认按当前请求地址生成。反向代理部署时，请确保代理传入的外部访问地址就是 APK 和用户可以访问的地址。
 
 首次打开管理台会进入初始化界面，用于设置管理密码。初始化后，管理台和管理 API 需要登录会话。
 

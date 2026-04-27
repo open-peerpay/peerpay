@@ -58,14 +58,13 @@ function admin<T extends Request>(ctx: AppContext, req: T, handler: () => Respon
 }
 
 function pairingUrl(req: Request, token: string) {
-  const baseUrl = Bun.env.PEERPAY_PUBLIC_URL?.trim();
-  const url = new URL("/api/android/enroll", baseUrl || req.url);
+  const url = new URL("/api/android/enroll", req.url);
   url.searchParams.set("token", token);
   return url.toString();
 }
 
 function publicUrl(req: Request, path: string) {
-  return new URL(path, Bun.env.PEERPAY_PUBLIC_URL?.trim() || req.url).toString();
+  return new URL(path, req.url).toString();
 }
 
 function publicOrder(req: Request, order: Order) {

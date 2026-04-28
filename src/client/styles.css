@@ -177,6 +177,25 @@ body {
   word-break: break-all;
 }
 
+.table-url {
+  max-width: min(420px, 38vw);
+}
+
+.qr-preview {
+  display: grid;
+  justify-items: center;
+  gap: 16px;
+}
+
+.qr-preview-meta {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  text-align: center;
+}
+
 .pay-page {
   min-height: 100vh;
   color: #181a17;

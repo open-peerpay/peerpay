@@ -33,6 +33,7 @@ import {
   MobileOutlined,
   FileSearchOutlined,
   LockOutlined,
+  QrcodeOutlined,
   ReloadOutlined,
   SendOutlined,
   SettingOutlined,
@@ -841,6 +842,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
   const [loading, setLoading] = useState(true);
   const [isPending, startTransition] = useTransition();
   const [qrOpen, setQrOpen] = useState(false);
+  const [previewQrCode, setPreviewQrCode] = useState<PresetQrCode | null>(null);
   const [deviceEnrollOpen, setDeviceEnrollOpen] = useState(false);
   const [paymentAccountOpen, setPaymentAccountOpen] = useState(false);
   const [paymentPageSettingsOpen, setPaymentPageSettingsOpen] = useState(false);
@@ -960,7 +962,19 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     { title: "收款账号", dataIndex: "paymentAccountCode", width: 120, render: (value) => value || "-" },
     { title: "方式", dataIndex: "paymentChannel", width: 90, render: (value) => <PaymentChannelTag value={value} /> },
     { title: "金额", dataIndex: "amount", width: 110 },
-    { title: "付款 URL", dataIndex: "payUrl", ellipsis: true },
+    {
+      title: "付款 URL",
+      dataIndex: "payUrl",
+      ellipsis: true,
+      render: (value: string, record) => (
+        <Space size="small">
+          <Text ellipsis className="table-url">{value}</Text>
+          <Tooltip title="查看二维码">
+            <Button size="small" icon={<QrcodeOutlined />} onClick={() => setPreviewQrCode(record)} />
+          </Tooltip>
+        </Space>
+      )
+    },
     { title: "更新时间", dataIndex: "updatedAt", width: 190, render: formatDate },
     {
       title: "操作",
@@ -1152,6 +1166,19 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
       <PaymentAccountModal open={paymentAccountOpen} onCancel={() => setPaymentAccountOpen(false)} onRefresh={refresh} />
       <PaymentAccountSettingsModal account={settingsPaymentAccount} open={Boolean(settingsPaymentAccount)} onCancel={() => setSettingsPaymentAccount(null)} onRefresh={refresh} />
       <PaymentPageSettingsModal settings={snapshot.paymentPageSettings} open={paymentPageSettingsOpen} onCancel={() => setPaymentPageSettingsOpen(false)} onRefresh={refresh} />
+      <Modal title="查看二维码" open={Boolean(previewQrCode)} footer={null} destroyOnHidden onCancel={() => setPreviewQrCode(null)}>
+        {previewQrCode ? (
+          <div className="qr-preview">
+            <QRCode value={previewQrCode.payUrl} size={220} bgColor="#ffffff" />
+            <div className="qr-preview-meta">
+              <Text strong>{previewQrCode.amount}</Text>
+              <PaymentChannelTag value={previewQrCode.paymentChannel} />
+              <Text type="secondary">{previewQrCode.paymentAccountName} · {previewQrCode.paymentAccountCode}</Text>
+              <Text className="break-text">{previewQrCode.payUrl}</Text>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
     </Layout>
   );
 }

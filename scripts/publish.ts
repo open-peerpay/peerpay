@@ -3,6 +3,8 @@
 const target = Bun.argv[2];
 const remoteDir = "/home/peerpay";
 const binaryPath = "dist/peerpay";
+const remoteBinaryPath = `${remoteDir}/peerpay`;
+const remoteUploadPath = `${remoteBinaryPath}.upload-${Date.now()}`;
 
 if (!target) {
   console.error("Usage: bun run publish root@your-server");
@@ -40,7 +42,8 @@ await run([
 ]);
 
 await run(["ssh", target, `mkdir -p ${remoteDir}`]);
-await run(["scp", binaryPath, `${target}:${remoteDir}/`]);
+await run(["scp", binaryPath, `${target}:${remoteUploadPath}`]);
+await run(["ssh", target, `chmod +x ${remoteUploadPath} && mv -f ${remoteUploadPath} ${remoteBinaryPath}`]);
 
 const remoteEcosystemPath = `${remoteDir}/ecosystem.config.js`;
 if (await succeeds(["ssh", target, `test -f ${remoteEcosystemPath}`])) {
@@ -48,8 +51,6 @@ if (await succeeds(["ssh", target, `test -f ${remoteEcosystemPath}`])) {
 } else {
   await run(["scp", "ecosystem.config.js", `${target}:${remoteDir}/`]);
 }
-
-await run(["ssh", target, `chmod +x ${remoteDir}/peerpay`]);
 
 console.log(`Published PeerPay to ${target}:${remoteDir}`);
 console.log(`Start it on the server with: cd ${remoteDir} && pm2 start`);

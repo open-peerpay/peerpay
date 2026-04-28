@@ -68,6 +68,7 @@ import {
   retryCallback,
   setDeviceEnabled,
   setPaymentAccountEnabled,
+  setQrCodeChecked,
   setupAdmin,
   updateOrderStatus,
   updatePaymentAccountSettings,
@@ -110,6 +111,9 @@ const menuItems: MenuProps["items"] = [
   { key: "logs", icon: <FileSearchOutlined />, label: "日志中心" },
   { key: "callbacks", icon: <CloudSyncOutlined />, label: "回调管理" }
 ];
+
+const rememberedViewStorageKey = "peerpay.admin.activeView.v1";
+const viewKeys = new Set<ViewKey>(["dashboard", "orders", "accounts", "payments", "logs", "callbacks"]);
 
 const viewTitles: Record<ViewKey, string> = {
   dashboard: "仪表盘",
@@ -213,6 +217,27 @@ function normalizeKeywordLines(value: string) {
 
 function keywordLines(value: string[]) {
   return value.join("\n");
+}
+
+function isViewKey(value: unknown): value is ViewKey {
+  return typeof value === "string" && viewKeys.has(value as ViewKey);
+}
+
+function rememberedViewKey(): ViewKey {
+  try {
+    const value = window.localStorage.getItem(rememberedViewStorageKey);
+    return isViewKey(value) ? value : "dashboard";
+  } catch {
+    return "dashboard";
+  }
+}
+
+function rememberViewKey(value: ViewKey) {
+  try {
+    window.localStorage.setItem(rememberedViewStorageKey, value);
+  } catch {
+    // Ignore storage failures so private browsing or quota issues do not block navigation.
+  }
 }
 
 interface GateProps {
@@ -920,7 +945,7 @@ function DashboardView({ snapshot }: { snapshot: Snapshot }) {
 
 function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
   const { message } = AntApp.useApp();
-  const [activeView, setActiveView] = useState<ViewKey>("dashboard");
+  const [activeView, setActiveView] = useState<ViewKey>(() => rememberedViewKey());
   const [snapshot, setSnapshot] = useState<Snapshot>(emptySnapshot);
   const [loading, setLoading] = useState(true);
   const [isPending, startTransition] = useTransition();
@@ -973,6 +998,25 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
       message.error(error instanceof Error ? error.message : "二维码删除失败");
     }
   }, [message, refresh]);
+
+  const handleQrCheckedToggle = useCallback(async (id: number, checked: boolean) => {
+    try {
+      await setQrCodeChecked(id, checked);
+      message.success(checked ? "已标记为已检查" : "已取消检查标记");
+      refresh();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "二维码检查状态更新失败");
+    }
+  }, [message, refresh]);
+
+  const handleMenuClick = useCallback<NonNullable<MenuProps["onClick"]>>(({ key }) => {
+    if (!isViewKey(key)) {
+      return;
+    }
+
+    setActiveView(key);
+    rememberViewKey(key);
+  }, []);
 
   const handleRetryCallback = useCallback(async (id: number) => {
     try {
@@ -1058,6 +1102,20 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
         </Space>
       )
     },
+    {
+      title: "已检查",
+      dataIndex: "checked",
+      width: 110,
+      render: (value: boolean, record) => (
+        <Switch
+          size="small"
+          checked={value}
+          checkedChildren="是"
+          unCheckedChildren="否"
+          onChange={(checked) => handleQrCheckedToggle(record.id, checked)}
+        />
+      )
+    },
     { title: "更新时间", dataIndex: "updatedAt", width: 190, render: formatDate },
     {
       title: "操作",
@@ -1070,7 +1128,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
         </Tooltip>
       )
     }
-  ], [handleDeleteQr]);
+  ], [handleDeleteQr, handleQrCheckedToggle]);
 
   const paymentAccountColumns = useMemo<Columns<PaymentAccount>>(() => [
     { title: "编码", dataIndex: "code", width: 140 },
@@ -1188,7 +1246,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
         <section className="panel">
           <Tabs items={[
             { key: "occupied", label: "占用金额", children: <Table<AmountOccupation> size="small" rowKey="orderId" loading={loading || isPending} dataSource={snapshot.occupations.items} columns={occupationColumns} scroll={{ x: 990 }} pagination={{ total: snapshot.occupations.total, pageSize: snapshot.occupations.limit, showSizeChanger: false }} /> },
-            { key: "qrcodes", label: "定额二维码", children: <Table<PresetQrCode> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.qrCodes.items} columns={qrColumns} scroll={{ x: 990 }} pagination={{ total: snapshot.qrCodes.total, pageSize: snapshot.qrCodes.limit, showSizeChanger: false }} /> }
+            { key: "qrcodes", label: "定额二维码", children: <Table<PresetQrCode> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.qrCodes.items} columns={qrColumns} scroll={{ x: 1100 }} pagination={{ total: snapshot.qrCodes.total, pageSize: snapshot.qrCodes.limit, showSizeChanger: false }} /> }
           ]} />
         </section>
       );
@@ -1233,7 +1291,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
             <Text type="secondary">轻量收款服务</Text>
           </div>
         </div>
-        <Menu mode="inline" selectedKeys={[activeView]} items={menuItems} onClick={({ key }) => setActiveView(key as ViewKey)} />
+        <Menu mode="inline" selectedKeys={[activeView]} items={menuItems} onClick={handleMenuClick} />
       </Sider>
       <Layout>
         <Header className="app-header">
@@ -1256,6 +1314,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
             <div className="qr-preview-meta">
               <Text strong>{previewQrCode.amount}</Text>
               <PaymentChannelTag value={previewQrCode.paymentChannel} />
+              {previewQrCode.checked ? <Tag color="success">已检查</Tag> : <Tag>未检查</Tag>}
               <Text type="secondary">{previewQrCode.paymentAccountName} · {previewQrCode.paymentAccountCode}</Text>
               <Text className="break-text">{previewQrCode.payUrl}</Text>
             </div>

@@ -21,6 +21,7 @@ import {
   paymentPagePath,
   setDeviceEnabled,
   setPaymentAccountEnabled,
+  setPresetQrCodeChecked,
   touchDevice,
   updateOrderStatus,
   updatePaymentAccountSettings,
@@ -174,6 +175,14 @@ export function createApiRoutes(ctx: AppContext) {
             items: [{ amount: body.amount ?? "", payUrl: body.payUrl ?? "" }]
           });
           return json(result, { status: 201 });
+        });
+      })
+    },
+    "/api/preset-qrcodes/:id/checked": {
+      POST: (req: RouteRequest<{ id: string }>) => withErrors(async () => {
+        return admin(ctx, req, async () => {
+          const body = await readJson<{ checked: unknown }>(req);
+          return json(setPresetQrCodeChecked(ctx, Number(req.params.id), boolFromBody(body.checked, "checked")));
         });
       })
     },

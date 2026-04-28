@@ -28,6 +28,7 @@ export interface PresetQrCode {
   amount: string;
   amountCents: number;
   payUrl: string;
+  checked: boolean;
   createdAt: string;
   updatedAt: string;
 }

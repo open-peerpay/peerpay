@@ -50,6 +50,7 @@ function migrate(db: Database) {
       payment_account_id INTEGER NOT NULL REFERENCES payment_accounts(id),
       amount_cents INTEGER NOT NULL,
       pay_url TEXT NOT NULL,
+      checked INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       UNIQUE (payment_account_id, amount_cents)
@@ -194,6 +195,7 @@ function migrate(db: Database) {
     );
   `);
   ensureColumn(db, "payment_accounts", "notification_keywords", "ALTER TABLE payment_accounts ADD COLUMN notification_keywords TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, "preset_qr_codes", "checked", "ALTER TABLE preset_qr_codes ADD COLUMN checked INTEGER NOT NULL DEFAULT 0");
 }
 
 function ensureColumn(db: Database, table: string, column: string, sql: string) {

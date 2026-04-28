@@ -141,6 +141,10 @@ export function deleteQrCode(id: number) {
   return request<PresetQrCode>(`/api/preset-qrcodes/${id}`, { method: "DELETE" });
 }
 
+export function setQrCodeChecked(id: number, checked: boolean) {
+  return request<PresetQrCode>(`/api/preset-qrcodes/${id}/checked`, { method: "POST", body: JSON.stringify({ checked }) });
+}
+
 export function retryCallback(id: number) {
   return request<CallbackLog>(`/api/callbacks/${id}/retry`, { method: "POST" });
 }

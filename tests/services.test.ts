@@ -11,8 +11,10 @@ import {
   handleAndroidNotification,
   listAmountOccupations,
   listNotificationLogs,
+  listPresetQrCodes,
   paymentPagePath,
   setPaymentAccountEnabled,
+  setPresetQrCodeChecked,
   signAndroidRequest,
   signPayload,
   updatePaymentAccountSettings,
@@ -22,7 +24,7 @@ import {
   verifyAndroidRequest,
   type AppContext
 } from "../server/services";
-import type { Device, EnrollDeviceResult, Order, PaymentAccount, PaymentPageData } from "../src/shared/types";
+import type { Device, EnrollDeviceResult, Order, PaymentAccount, PaymentPageData, PresetQrCode } from "../src/shared/types";
 import { getAdminPath, getAdminSessionState, isSetupRequired, loginAdmin, setupAdminPassword } from "../server/auth";
 import { parseMoney } from "../server/money";
 import { createApiRoutes } from "../server/routes";
@@ -164,6 +166,30 @@ test("uses per-account preset qr codes and isolates payment channels", () => {
   expect(wechat.payMode).toBe("preset");
   expect(wechat.payUrl).toBe(paymentPagePath(wechat.id));
   expect(getPublicPaymentPage(ctx, wechat.id).targetPayUrl).toBe("https://pay.example/wechat-a/12.00");
+});
+
+test("tracks preset qr code checked state and resets it when url changes", () => {
+  upsertPresetQrCodes(ctx, {
+    paymentAccountCode: "alipay-a",
+    items: [{ amount: "12.50", payUrl: "https://pay.example/alipay-a/12.50" }]
+  });
+  const created = listPresetQrCodes(ctx, { paymentAccountCode: "alipay-a" }).items.find((item) => item.amount === "12.50");
+
+  expect(created?.checked).toBe(false);
+  const checked = setPresetQrCodeChecked(ctx, created?.id ?? 0, true);
+  expect(checked.checked).toBe(true);
+
+  upsertPresetQrCodes(ctx, {
+    paymentAccountCode: "alipay-a",
+    items: [{ amount: "12.50", payUrl: "https://pay.example/alipay-a/12.50" }]
+  });
+  expect(listPresetQrCodes(ctx, { paymentAccountCode: "alipay-a" }).items.find((item) => item.id === checked.id)?.checked).toBe(true);
+
+  upsertPresetQrCodes(ctx, {
+    paymentAccountCode: "alipay-a",
+    items: [{ amount: "12.50", payUrl: "https://pay.example/alipay-a/12.50-updated" }]
+  });
+  expect(listPresetQrCodes(ctx, { paymentAccountCode: "alipay-a" }).items.find((item) => item.id === checked.id)?.checked).toBe(false);
 });
 
 test("does not offset cent-level amounts but can use another account", () => {
@@ -324,6 +350,50 @@ test("order api returns an absolute payment page url", async () => {
 
   expect(publicPayload.data.orderId).toBe(payload.data.id);
   expect(publicPayload.data.targetPayUrl).toBe("https://pay.example/alipay-a");
+});
+
+test("preset qr code checked api toggles the flag", async () => {
+  upsertPresetQrCodes(ctx, {
+    paymentAccountCode: "alipay-a",
+    items: [{ amount: "17.50", payUrl: "https://pay.example/alipay-a/17.50" }]
+  });
+  const qrCode = listPresetQrCodes(ctx, { paymentAccountCode: "alipay-a" }).items.find((item) => item.amount === "17.50");
+  if (!qrCode) {
+    throw new Error("test qr code not found");
+  }
+
+  const routes = createApiRoutes(ctx);
+  await setupAdminPassword(ctx, "strong-password");
+  const cookie = await loginAdmin(ctx, "strong-password");
+  const checkedResponse = await routes["/api/preset-qrcodes/:id/checked"].POST(Object.assign(
+    new Request(`https://peerpay.test/api/preset-qrcodes/${qrCode.id}/checked`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cookie": cookie
+      },
+      body: JSON.stringify({ checked: true })
+    }),
+    { params: { id: String(qrCode.id) } }
+  ));
+  const checkedPayload = await checkedResponse.json() as { data: PresetQrCode };
+
+  expect(checkedPayload.data.checked).toBe(true);
+
+  const uncheckedResponse = await routes["/api/preset-qrcodes/:id/checked"].POST(Object.assign(
+    new Request(`https://peerpay.test/api/preset-qrcodes/${qrCode.id}/checked`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cookie": cookie
+      },
+      body: JSON.stringify({ checked: false })
+    }),
+    { params: { id: String(qrCode.id) } }
+  ));
+  const uncheckedPayload = await uncheckedResponse.json() as { data: PresetQrCode };
+
+  expect(uncheckedPayload.data.checked).toBe(false);
 });
 
 test("device enrollment api returns a pairing path", async () => {

@@ -83,6 +83,7 @@ interface PresetQrCodeRow {
   payment_channel: PaymentChannel;
   amount_cents: number;
   pay_url: string;
+  checked: RowBool;
   created_at: string;
   updated_at: string;
 }
@@ -256,6 +257,7 @@ function mapPresetQrCode(row: PresetQrCodeRow): PresetQrCode {
     amount: formatMoney(row.amount_cents) ?? "0.00",
     amountCents: row.amount_cents,
     payUrl: row.pay_url,
+    checked: row.checked === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -823,6 +825,7 @@ export function upsertPresetQrCodes(ctx: AppContext, input: BulkPresetQrCodeInpu
     VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(payment_account_id, amount_cents) DO UPDATE SET
       pay_url = excluded.pay_url,
+      checked = CASE WHEN preset_qr_codes.pay_url = excluded.pay_url THEN preset_qr_codes.checked ELSE 0 END,
       updated_at = excluded.updated_at
   `);
 
@@ -880,6 +883,30 @@ export function listPresetQrCodes(
   `, ...params);
 
   return { items: rows.map(mapPresetQrCode), total, limit, offset };
+}
+
+export function setPresetQrCodeChecked(ctx: AppContext, id: number, checked: boolean) {
+  const row = ctx.db.query(presetSelectSql("WHERE q.id = ?")).get(id) as PresetQrCodeRow | null;
+
+  if (!row) {
+    throw apiError(404, "定额二维码不存在");
+  }
+
+  const now = nowIso();
+  ctx.db.query("UPDATE preset_qr_codes SET checked = ?, updated_at = ? WHERE id = ?")
+    .run(checked ? 1 : 0, now, id);
+
+  logSystem(ctx, "info", "preset_qr_codes.checked_updated", "定额二维码检查状态已更新", {
+    qrCodeId: id,
+    paymentAccountId: row.payment_account_id,
+    checked
+  });
+
+  const updated = ctx.db.query(presetSelectSql("WHERE q.id = ?")).get(id) as PresetQrCodeRow | null;
+  if (!updated) {
+    throw apiError(500, "定额二维码检查状态更新失败");
+  }
+  return mapPresetQrCode(updated);
 }
 
 export function deletePresetQrCode(ctx: AppContext, id: number) {

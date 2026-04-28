@@ -59,7 +59,7 @@ export function pageOptions(url: URL) {
   };
 }
 
-export function boolFromBody(value: unknown) {
+export function boolFromBody(value: unknown, label = "enabled") {
   if (typeof value === "boolean") {
     return value;
   }
@@ -69,5 +69,5 @@ export function boolFromBody(value: unknown) {
   if (value === 0 || value === "0" || value === "false") {
     return false;
   }
-  throw apiError(400, "enabled 必须是布尔值");
+  throw apiError(400, `${label} 必须是布尔值`);
 }

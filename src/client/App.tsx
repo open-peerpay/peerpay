@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
+import QRCodeImage from "qrcode";
 import {
   App as AntApp,
   Button,
@@ -9,7 +10,7 @@ import {
   Layout,
   Menu,
   Modal,
-  QRCode,
+  QRCode as AntQRCode,
   Select,
   Space,
   Statistic,
@@ -281,20 +282,58 @@ function paymentOrderIdFromPath() {
   return prefix === "pay" && orderId ? decodeURIComponent(orderId) : "";
 }
 
-function paymentQrStatus(status: OrderStatus) {
-  if (status === "expired") {
-    return "expired";
+function isStandardHttpsUrl(value: string) {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
   }
-  if (status === "paid" || status === "notified") {
-    return "scanned";
-  }
-  return "active";
+}
+
+function PaymentQrImage({ value, status }: { value: string; status: OrderStatus }) {
+  const [imageUrl, setImageUrl] = useState("");
+
+  useEffect(() => {
+    let active = true;
+
+    QRCodeImage.toDataURL(value, {
+      errorCorrectionLevel: "M",
+      margin: 2,
+      scale: 8,
+      color: {
+        dark: "#181a17",
+        light: "#ffffff"
+      }
+    }).then((url) => {
+      if (active) {
+        setImageUrl(url);
+      }
+    }).catch(() => {
+      if (active) {
+        setImageUrl("");
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [value]);
+
+  const settled = status === "paid" || status === "notified";
+
+  return (
+    <div className="pay-qr-image-wrap">
+      {imageUrl ? <img className="pay-qr-image" src={imageUrl} alt="付款二维码" /> : null}
+      {status === "expired" ? <div className="pay-qr-overlay">已过期</div> : null}
+      {settled ? <div className="pay-qr-overlay">已支付</div> : null}
+    </div>
+  );
 }
 
 function PaymentPageContent({ page }: { page: PaymentPageData }) {
   const payable = page.status === "pending";
   const needsExactInput = page.amountInputRequired;
-  const payTarget = page.targetPayUrl.startsWith("http") ? "_blank" : undefined;
+  const canOpenPayUrl = page.paymentChannel === "alipay" && isStandardHttpsUrl(page.targetPayUrl);
   const channelTone = page.paymentChannel === "wechat" ? "wechat" : "alipay";
   const payModeText = page.payMode === "fallback" ? "通用码" : "定额码";
   const statusLabel = statusText[page.status] ?? page.status;
@@ -323,13 +362,9 @@ function PaymentPageContent({ page }: { page: PaymentPageData }) {
             </div>
             <div className="pay-qr-body">
               <div className="pay-qr-stage">
-                <QRCode
+                <PaymentQrImage
                   value={page.targetPayUrl}
-                  status={paymentQrStatus(page.status)}
-                  size={274}
-                  bordered={false}
-                  bgColor="#ffffff"
-                  color="#181a17"
+                  status={page.status}
                 />
               </div>
               <p className={needsExactInput ? "pay-ready-note pay-ready-note-warn" : "pay-ready-note"}>
@@ -337,17 +372,19 @@ function PaymentPageContent({ page }: { page: PaymentPageData }) {
                   ? `请在付款应用中手动输入 ¥${page.actualAmount}，金额必须完全一致。`
                   : "扫码后直接按页面金额付款即可，系统会自动匹配到账通知。"}
               </p>
-              <Button
-                type="primary"
-                size="large"
-                block
-                href={payable ? page.targetPayUrl : undefined}
-                target={payTarget}
-                disabled={!payable}
-                icon={payable ? <SendOutlined /> : <CheckCircleOutlined />}
-              >
-                {payable ? "唤起付款应用" : statusLabel}
-              </Button>
+              {canOpenPayUrl ? (
+                <Button
+                  type="primary"
+                  size="large"
+                  block
+                  href={payable ? page.targetPayUrl : undefined}
+                  target="_blank"
+                  disabled={!payable}
+                  icon={payable ? <SendOutlined /> : <CheckCircleOutlined />}
+                >
+                  {payable ? "打开支付宝付款" : statusLabel}
+                </Button>
+              ) : null}
             </div>
           </div>
 
@@ -599,7 +636,7 @@ function DeviceEnrollmentModal({ paymentAccounts, open, onCancel, onRefresh }: M
       </Form>
       {enrollment ? (
         <div className="pairing-result">
-          <QRCode value={pairingUrl} size={220} />
+          <AntQRCode value={pairingUrl} size={220} />
           <div className="pairing-copy">
             <Text strong>配对 URL</Text>
             <Text copyable className="break-text">{pairingUrl}</Text>
@@ -1169,7 +1206,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
       <Modal title="查看二维码" open={Boolean(previewQrCode)} footer={null} destroyOnHidden onCancel={() => setPreviewQrCode(null)}>
         {previewQrCode ? (
           <div className="qr-preview">
-            <QRCode value={previewQrCode.payUrl} size={220} bgColor="#ffffff" />
+            <AntQRCode value={previewQrCode.payUrl} size={220} bgColor="#ffffff" />
             <div className="qr-preview-meta">
               <Text strong>{previewQrCode.amount}</Text>
               <PaymentChannelTag value={previewQrCode.paymentChannel} />

@@ -334,6 +334,33 @@ body {
   background: #ffffff;
 }
 
+.pay-qr-image-wrap {
+  position: relative;
+  width: 274px;
+  max-width: calc(100% - 32px);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+}
+
+.pay-qr-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  image-rendering: crisp-edges;
+}
+
+.pay-qr-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 253, 247, 0.82);
+  color: #181a17;
+  font-size: 22px;
+  font-weight: 900;
+}
+
 .pay-qr-body .ant-btn {
   height: 48px;
   border: 2px solid #1e221d;

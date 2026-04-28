@@ -403,6 +403,134 @@ test("matches android payment notifications by package name across bound account
   expect(listAmountOccupations(ctx).items).toHaveLength(0);
 });
 
+test("filters android payment notifications with per-account keywords", () => {
+  const updatedAlipayA = updatePaymentAccountSettings(ctx, alipayA.id, {
+    notificationKeywords: ["支付宝 A 到账"]
+  });
+  const updatedAlipayB = updatePaymentAccountSettings(ctx, alipayB.id, {
+    notificationKeywords: ["支付宝 B 到账"]
+  });
+  expect(updatedAlipayA?.notificationKeywords).toEqual(["支付宝 A 到账"]);
+  expect(updatedAlipayB?.notificationKeywords).toEqual(["支付宝 B 到账"]);
+
+  const firstEnroll = enrollTestDevice("alipay-a", "android-filter");
+  const secondEnrollment = createDeviceEnrollment(ctx, {
+    paymentAccountCode: "alipay-b",
+    name: "主收款机",
+    ttlMinutes: 10
+  });
+  const secondEnroll = enrollAndroidDevice(ctx, {
+    enrollmentToken: secondEnrollment.token,
+    deviceId: "android-filter",
+    appVersion: "0.1.0"
+  });
+  const verifiedDevice = secondEnroll.device;
+  expect(firstEnroll.device.deviceId).toBe(verifiedDevice.deviceId);
+  expect(verifiedDevice.paymentAccounts.map((item) => item.code).sort()).toEqual(["alipay-a", "alipay-b"]);
+
+  const firstOrder = createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "22.00",
+    merchantOrderId: "filter-alipay-a"
+  });
+  const secondOrder = createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "22.00",
+    merchantOrderId: "filter-alipay-b"
+  });
+
+  expect(firstOrder.paymentAccountCode).toBe("alipay-a");
+  expect(secondOrder.paymentAccountCode).toBe("alipay-b");
+  const matchedSecond = handleAndroidNotification(ctx, {
+    packageName: "com.eg.android.AlipayGphone",
+    actualAmount: "22.00",
+    rawText: "支付宝 B 到账 22.00 元"
+  }, verifiedDevice);
+
+  expect(matchedSecond.matched).toBe(true);
+  expect(matchedSecond.order?.id).toBe(secondOrder.id);
+  expect(matchedSecond.log.paymentAccountCode).toBe("alipay-b");
+
+  const blocked = handleAndroidNotification(ctx, {
+    packageName: "com.eg.android.AlipayGphone",
+    actualAmount: "22.00",
+    rawText: "支付宝到账 22.00 元"
+  }, verifiedDevice);
+
+  expect(blocked.matched).toBe(false);
+  expect(blocked.log.status).toBe("unmatched");
+  expect(listAmountOccupations(ctx).items.some((item) => item.orderId === firstOrder.id)).toBe(true);
+
+  const matchedFirst = handleAndroidNotification(ctx, {
+    packageName: "com.eg.android.AlipayGphone",
+    actualAmount: "22.00",
+    rawText: "支付宝 A 到账 22.00 元"
+  }, verifiedDevice);
+
+  expect(matchedFirst.matched).toBe(true);
+  expect(matchedFirst.order?.id).toBe(firstOrder.id);
+});
+
+test("routes same-amount wechat notifications to different accounts by keywords", () => {
+  const wechatB = createPaymentAccount(ctx, {
+    code: "wechat-b",
+    name: "微信 B",
+    paymentChannel: "wechat",
+    priority: 20,
+    maxOffsetCents: 10,
+    fallbackPayUrl: "https://pay.example/wechat-b",
+    notificationKeywords: ["微信支付", "个人收款码"]
+  });
+  updatePaymentAccountSettings(ctx, wechatA.id, {
+    notificationKeywords: ["微信收款助手", "店员消息"]
+  });
+
+  const firstEnroll = enrollTestDevice("wechat-a", "android-wechat-keywords");
+  const secondEnrollment = createDeviceEnrollment(ctx, {
+    paymentAccountCode: "wechat-b",
+    name: "微信备用机",
+    ttlMinutes: 10
+  });
+  const secondEnroll = enrollAndroidDevice(ctx, {
+    enrollmentToken: secondEnrollment.token,
+    deviceId: "android-wechat-keywords",
+    appVersion: "0.1.0"
+  });
+  const verifiedDevice = secondEnroll.device;
+  expect(firstEnroll.device.deviceId).toBe(verifiedDevice.deviceId);
+  expect(verifiedDevice.paymentAccounts.map((item) => item.code).sort()).toEqual(["wechat-a", "wechat-b"]);
+
+  const assistantOrder = createOrder(ctx, {
+    paymentChannel: "wechat",
+    amount: "1.00",
+    merchantOrderId: "wechat-assistant"
+  });
+  const personalCodeOrder = createOrder(ctx, {
+    paymentChannel: "wechat",
+    amount: "1.00",
+    merchantOrderId: "wechat-personal-code"
+  });
+
+  expect(assistantOrder.paymentAccountCode).toBe("wechat-a");
+  expect(personalCodeOrder.paymentAccountCode).toBe(wechatB.code);
+
+  const assistantResult = handleAndroidNotification(ctx, {
+    rawText: "android.app.Notification 微信收款助手: [店员消息]收款到账1.00元"
+  }, verifiedDevice);
+  const personalCodeResult = handleAndroidNotification(ctx, {
+    rawText: "android.app.Notification 微信支付: 个人收款码到账¥1.00"
+  }, verifiedDevice);
+
+  expect(assistantResult.matched).toBe(true);
+  expect(assistantResult.order?.id).toBe(assistantOrder.id);
+  expect(assistantResult.log.paymentAccountCode).toBe("wechat-a");
+  expect(assistantResult.log.actualAmount).toBe("1.00");
+  expect(personalCodeResult.matched).toBe(true);
+  expect(personalCodeResult.order?.id).toBe(personalCodeOrder.id);
+  expect(personalCodeResult.log.paymentAccountCode).toBe("wechat-b");
+  expect(personalCodeResult.log.actualAmount).toBe("1.00");
+});
+
 test("does not match orders for payment accounts not bound to the android device", () => {
   setPaymentAccountEnabled(ctx, alipayA.id, false);
   const order = createOrder(ctx, {

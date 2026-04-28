@@ -71,6 +71,7 @@ interface PaymentAccountRow {
   enabled: RowBool;
   max_offset_cents: number;
   fallback_pay_url: string | null;
+  notification_keywords: string | null;
   created_at: string;
 }
 
@@ -240,6 +241,7 @@ function mapPaymentAccount(row: PaymentAccountRow): PaymentAccount {
     maxOffsetCents: row.max_offset_cents,
     maxOffset: formatMoney(row.max_offset_cents) ?? "0.00",
     fallbackPayUrl: row.fallback_pay_url,
+    notificationKeywords: parseNotificationKeywords(row.notification_keywords),
     createdAt: row.created_at
   };
 }
@@ -386,6 +388,18 @@ function parseJson(value: string | null): unknown {
   }
 }
 
+function parseNotificationKeywords(value: string | null) {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    return normalizeKeywordList(JSON.parse(value), "到账通知关键词");
+  } catch {
+    return [];
+  }
+}
+
 function paymentAccountById(ctx: AppContext, id: number) {
   const row = ctx.db.query("SELECT * FROM payment_accounts WHERE id = ?").get(id) as PaymentAccountRow | null;
   return row ? mapPaymentAccount(row) : null;
@@ -472,6 +486,16 @@ function inferPaymentChannel(input: AndroidNotificationInput, rawText: string) {
   return DEFAULT_PAYMENT_CHANNEL;
 }
 
+function accountPassesKeywordFilter(account: PaymentAccountRow, rawText: string) {
+  const keywords = parseNotificationKeywords(account.notification_keywords);
+  if (keywords.length === 0) {
+    return true;
+  }
+
+  const text = rawText.toLowerCase();
+  return keywords.some((keyword) => text.includes(keyword.toLowerCase()));
+}
+
 const ALLOWED_PAY_URL_PROTOCOLS = new Set(["http:", "https:", "wxp:"]);
 
 function normalizePayUrl(value: string | null | undefined, optional = false) {
@@ -530,6 +554,39 @@ function setAppSetting(ctx: AppContext, key: string, value: string) {
     VALUES (?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
   `).run(key, value, nowIso());
+}
+
+function normalizeKeywordList(value: unknown, label: string) {
+  const items = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/[\r\n,，;；]+/)
+      : [];
+  const keywords: string[] = [];
+  const seen = new Set<string>();
+
+  for (const item of items) {
+    const keyword = String(item ?? "").trim();
+    if (!keyword) {
+      continue;
+    }
+    if (keyword.length > 40) {
+      throw apiError(400, `${label}不能超过 40 个字符`);
+    }
+
+    const key = keyword.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    keywords.push(keyword);
+  }
+
+  if (keywords.length > 30) {
+    throw apiError(400, `${label}不能超过 30 个`);
+  }
+
+  return keywords;
 }
 
 function normalizePaymentPageSettingsInput(
@@ -667,6 +724,7 @@ export function createPaymentAccount(ctx: AppContext, input: CreatePaymentAccoun
   const priority = normalizePriority(input.priority ?? 100);
   const maxOffsetCents = normalizeMaxOffset(input.maxOffsetCents ?? DEFAULT_MAX_OFFSET_CENTS);
   const fallbackPayUrl = normalizePayUrl(input.fallbackPayUrl ?? null, true);
+  const notificationKeywords = normalizeKeywordList(input.notificationKeywords, "到账通知关键词");
 
   if (!/^[a-zA-Z0-9_-]{2,32}$/.test(code)) {
     throw apiError(400, "收款账号编码仅支持 2-32 位字母、数字、下划线或短横线");
@@ -677,9 +735,9 @@ export function createPaymentAccount(ctx: AppContext, input: CreatePaymentAccoun
 
   try {
     ctx.db.query(`
-      INSERT INTO payment_accounts(code, name, payment_channel, priority, max_offset_cents, fallback_pay_url)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(code, name, paymentChannel, priority, maxOffsetCents, fallbackPayUrl);
+      INSERT INTO payment_accounts(code, name, payment_channel, priority, max_offset_cents, fallback_pay_url, notification_keywords)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(code, name, paymentChannel, priority, maxOffsetCents, fallbackPayUrl, JSON.stringify(notificationKeywords));
   } catch {
     throw apiError(409, "收款账号编码已存在");
   }
@@ -718,6 +776,10 @@ export function updatePaymentAccountSettings(ctx: AppContext, id: number, input:
     input.fallbackPayUrl === undefined ? account.fallbackPayUrl : input.fallbackPayUrl,
     true
   );
+  const notificationKeywords = normalizeKeywordList(
+    input.notificationKeywords === undefined ? account.notificationKeywords : input.notificationKeywords,
+    "到账通知关键词"
+  );
 
   if (!/^[a-zA-Z0-9_-]{2,32}$/.test(code)) {
     throw apiError(400, "收款账号编码仅支持 2-32 位字母、数字、下划线或短横线");
@@ -729,9 +791,9 @@ export function updatePaymentAccountSettings(ctx: AppContext, id: number, input:
   try {
     ctx.db.query(`
       UPDATE payment_accounts
-      SET code = ?, name = ?, payment_channel = ?, priority = ?, max_offset_cents = ?, fallback_pay_url = ?
+      SET code = ?, name = ?, payment_channel = ?, priority = ?, max_offset_cents = ?, fallback_pay_url = ?, notification_keywords = ?
       WHERE id = ?
-    `).run(code, name, paymentChannel, priority, maxOffsetCents, fallbackPayUrl, id);
+    `).run(code, name, paymentChannel, priority, maxOffsetCents, fallbackPayUrl, JSON.stringify(notificationKeywords), id);
   } catch {
     throw apiError(409, "收款账号编码已存在");
   }
@@ -740,7 +802,8 @@ export function updatePaymentAccountSettings(ctx: AppContext, id: number, input:
     paymentChannel,
     priority,
     maxOffsetCents,
-    hasFallbackPayUrl: Boolean(fallbackPayUrl)
+    hasFallbackPayUrl: Boolean(fallbackPayUrl),
+    notificationKeywords: notificationKeywords.length
   });
   return paymentAccountById(ctx, id);
 }
@@ -1338,7 +1401,8 @@ export function handleAndroidNotification(
   }
 
   const boundAccounts = listDevicePaymentAccounts(ctx, deviceId, paymentChannel)
-    .filter((account) => account.enabled === 1);
+    .filter((account) => account.enabled === 1)
+    .filter((account) => accountPassesKeywordFilter(account, rawText));
   const transaction = ctx.db.transaction((): NotificationMatchResult => {
     let matchedOrder: Order | null = null;
     if (boundAccounts.length > 0) {

@@ -38,6 +38,7 @@ function migrate(db: Database) {
       enabled INTEGER NOT NULL DEFAULT 1,
       max_offset_cents INTEGER NOT NULL DEFAULT ${DEFAULT_MAX_OFFSET_CENTS},
       fallback_pay_url TEXT,
+      notification_keywords TEXT NOT NULL DEFAULT '[]',
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     );
 
@@ -192,4 +193,12 @@ function migrate(db: Database) {
       updated_at TEXT NOT NULL
     );
   `);
+  ensureColumn(db, "payment_accounts", "notification_keywords", "ALTER TABLE payment_accounts ADD COLUMN notification_keywords TEXT NOT NULL DEFAULT '[]'");
+}
+
+function ensureColumn(db: Database, table: string, column: string, sql: string) {
+  const columns = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!columns.some((item) => item.name === column)) {
+    db.exec(sql);
+  }
 }

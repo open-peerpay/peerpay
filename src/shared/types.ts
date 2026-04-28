@@ -15,6 +15,7 @@ export interface PaymentAccount {
   maxOffsetCents: number;
   maxOffset: string;
   fallbackPayUrl: string | null;
+  notificationKeywords: string[];
   createdAt: string;
 }
 
@@ -259,6 +260,7 @@ export interface CreatePaymentAccountInput {
   priority?: number;
   maxOffsetCents?: number;
   fallbackPayUrl?: string | null;
+  notificationKeywords?: string[];
 }
 
 export interface UpdatePaymentAccountInput {
@@ -268,6 +270,7 @@ export interface UpdatePaymentAccountInput {
   priority?: number;
   maxOffsetCents?: number;
   fallbackPayUrl?: string | null;
+  notificationKeywords?: string[];
 }
 
 export type UpdatePaymentPageSettingsInput = Partial<PaymentPageSettings>;

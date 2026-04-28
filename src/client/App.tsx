@@ -191,6 +191,30 @@ function normalizeQrLines(lines: string) {
     });
 }
 
+function normalizeKeywordLines(value: string) {
+  const keywords: string[] = [];
+  const seen = new Set<string>();
+
+  for (const item of value.split(/[\r\n,，;；]+/)) {
+    const keyword = item.trim();
+    if (!keyword) {
+      continue;
+    }
+    const key = keyword.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    keywords.push(keyword);
+  }
+
+  return keywords;
+}
+
+function keywordLines(value: string[]) {
+  return value.join("\n");
+}
+
 interface GateProps {
   mode: "setup" | "login";
   onDone: (state: AdminSessionState) => void;
@@ -664,12 +688,13 @@ function PaymentAccountModal({ open, onCancel, onRefresh }: Omit<ModalProps, "pa
   const { message } = AntApp.useApp();
   const [saving, setSaving] = useState(false);
 
-  const handleFinish = useCallback(async (values: { code: string; name: string; paymentChannel: PaymentChannel; priority: number; maxOffsetCents: number; fallbackPayUrl?: string }) => {
+  const handleFinish = useCallback(async (values: { code: string; name: string; paymentChannel: PaymentChannel; priority: number; maxOffsetCents: number; fallbackPayUrl?: string; notificationKeywords?: string }) => {
     setSaving(true);
     try {
       await createPaymentAccount({
         ...values,
-        fallbackPayUrl: values.fallbackPayUrl || null
+        fallbackPayUrl: values.fallbackPayUrl || null,
+        notificationKeywords: normalizeKeywordLines(values.notificationKeywords ?? "")
       });
       message.success("收款账号已创建");
       form.resetFields();
@@ -703,6 +728,10 @@ function PaymentAccountModal({ open, onCancel, onRefresh }: Omit<ModalProps, "pa
         <Form.Item name="fallbackPayUrl" label="兜底收款码 URL">
           <Input allowClear placeholder="支持 https://... 或 wxp://..." />
         </Form.Item>
+        <Form.Item name="notificationKeywords" label="通知关键词">
+          <TextArea rows={4} autoSize={{ minRows: 4, maxRows: 8 }} maxLength={600} showCount placeholder={"到账\n收款成功"} />
+        </Form.Item>
+        <Text type="secondary">每行一个关键词；留空时该账号不做关键词限制。</Text>
       </Form>
     </Modal>
   );
@@ -728,12 +757,13 @@ function PaymentAccountSettingsModal({ account, open, onCancel, onRefresh }: Pay
         paymentChannel: account.paymentChannel,
         priority: account.priority,
         maxOffsetCents: account.maxOffsetCents,
-        fallbackPayUrl: account.fallbackPayUrl
+        fallbackPayUrl: account.fallbackPayUrl,
+        notificationKeywords: keywordLines(account.notificationKeywords)
       });
     }
   }, [account, form, open]);
 
-  const handleFinish = useCallback(async (values: { code: string; name: string; paymentChannel: PaymentChannel; priority: number; maxOffsetCents: number; fallbackPayUrl?: string }) => {
+  const handleFinish = useCallback(async (values: { code: string; name: string; paymentChannel: PaymentChannel; priority: number; maxOffsetCents: number; fallbackPayUrl?: string; notificationKeywords?: string }) => {
     if (!account) {
       return;
     }
@@ -741,7 +771,8 @@ function PaymentAccountSettingsModal({ account, open, onCancel, onRefresh }: Pay
     try {
       await updatePaymentAccountSettings(account.id, {
         ...values,
-        fallbackPayUrl: values.fallbackPayUrl || null
+        fallbackPayUrl: values.fallbackPayUrl || null,
+        notificationKeywords: normalizeKeywordLines(values.notificationKeywords ?? "")
       });
       message.success("收款账号配置已更新");
       onCancel();
@@ -774,6 +805,10 @@ function PaymentAccountSettingsModal({ account, open, onCancel, onRefresh }: Pay
         <Form.Item name="fallbackPayUrl" label="兜底收款码 URL">
           <Input allowClear placeholder="支持 https://... 或 wxp://..." />
         </Form.Item>
+        <Form.Item name="notificationKeywords" label="通知关键词">
+          <TextArea rows={4} autoSize={{ minRows: 4, maxRows: 8 }} maxLength={600} showCount placeholder={"到账\n收款成功"} />
+        </Form.Item>
+        <Text type="secondary">每行一个关键词；留空时该账号不做关键词限制。</Text>
       </Form>
     </Modal>
   );
@@ -1044,6 +1079,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     { title: "优先级", dataIndex: "priority", width: 90 },
     { title: "最大偏移", dataIndex: "maxOffsetCents", width: 110, render: (value) => `${value} 分` },
     { title: "兜底码", dataIndex: "fallbackPayUrl", width: 100, render: (value) => value ? <Tag color="success">已配置</Tag> : <Tag>未配置</Tag> },
+    { title: "关键词", dataIndex: "notificationKeywords", width: 100, render: (value: string[]) => value.length ? <Tag color="processing">{value.length} 个</Tag> : <Tag>不限</Tag> },
     { title: "状态", dataIndex: "enabled", width: 100, render: (value) => value ? <Tag color="success">启用</Tag> : <Tag color="default">停用</Tag> },
     {
       title: "操作",
@@ -1203,7 +1239,6 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
         <Header className="app-header">
           <div>
             <Title level={3}>{viewTitles[activeView]}</Title>
-            <Text type="secondary">SQLite · Bun · Android Listener</Text>
           </div>
           {toolbar}
         </Header>

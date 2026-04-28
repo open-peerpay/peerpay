@@ -332,6 +332,7 @@ function PaymentQrImage({ value, status }: { value: string; status: OrderStatus 
 
 function PaymentPageContent({ page }: { page: PaymentPageData }) {
   const payable = page.status === "pending";
+  const paid = page.status === "paid" || page.status === "notified";
   const needsExactInput = page.amountInputRequired;
   const canOpenPayUrl = page.paymentChannel === "alipay" && isStandardHttpsUrl(page.targetPayUrl);
   const channelTone = page.paymentChannel === "wechat" ? "wechat" : "alipay";
@@ -353,6 +354,16 @@ function PaymentPageContent({ page }: { page: PaymentPageData }) {
             <small>{payModeText}</small>
           </div>
         </header>
+
+        {paid ? (
+          <section className="pay-success-banner" aria-live="polite">
+            <div className="pay-success-icon"><CheckCircleOutlined /></div>
+            <div>
+              <strong>支付成功</strong>
+              <p>系统已确认收到 ¥{page.actualAmount}，请勿重复付款。</p>
+            </div>
+          </section>
+        ) : null}
 
         <section className="pay-workspace">
           <div className={`pay-panel pay-qr-panel pay-terminal-${channelTone}`}>

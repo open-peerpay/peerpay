@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
-import QRCodeImage from "qrcode";
+import QRCodeImage from "qrcode/lib/browser";
 import {
   App as AntApp,
   Button,

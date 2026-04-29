@@ -518,6 +518,32 @@ body {
   image-rendering: crisp-edges;
 }
 
+.pay-qr-channel-icon {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  width: 54px;
+  height: 54px;
+  border-radius: 16px;
+  display: grid;
+  place-items: center;
+  color: #ffffff;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.24),
+    0 8px 18px rgba(24, 26, 23, 0.22);
+  transform: translate(-50%, -50%);
+  font-size: 34px;
+  line-height: 1;
+  z-index: 1;
+}
+
+.pay-qr-channel-alipay {
+  background: #1677ff;
+}
+
+.pay-qr-channel-wechat {
+  background: #07c160;
+}
+
 .pay-qr-overlay {
   position: absolute;
   inset: 0;
@@ -527,6 +553,7 @@ body {
   color: #181a17;
   font-size: 22px;
   font-weight: 900;
+  z-index: 2;
 }
 
 .pay-qr-body .ant-btn {

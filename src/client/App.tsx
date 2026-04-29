@@ -23,6 +23,7 @@ import {
 } from "antd";
 import type { MenuProps, TableProps } from "antd";
 import {
+  AlipayOutlined,
   ApiOutlined,
   AppstoreOutlined,
   BellOutlined,
@@ -39,7 +40,8 @@ import {
   ReloadOutlined,
   SendOutlined,
   SettingOutlined,
-  WalletOutlined
+  WalletOutlined,
+  WechatFilled
 } from "@ant-design/icons";
 import type {
   AmountOccupation,
@@ -414,14 +416,24 @@ function isStandardHttpsUrl(value: string) {
   }
 }
 
-function PaymentQrImage({ value, status }: { value: string; status: OrderStatus }) {
+function PaymentQrChannelIcon({ channel }: { channel: PaymentChannel }) {
+  const label = PAYMENT_CHANNEL_LABELS[channel];
+
+  return (
+    <span className={`pay-qr-channel-icon pay-qr-channel-${channel}`} aria-label={`${label}扫码`}>
+      {channel === "wechat" ? <WechatFilled /> : <AlipayOutlined />}
+    </span>
+  );
+}
+
+function PaymentQrImage({ value, status, channel }: { value: string; status: OrderStatus; channel: PaymentChannel }) {
   const [imageUrl, setImageUrl] = useState("");
 
   useEffect(() => {
     let active = true;
 
     QRCodeImage.toDataURL(value, {
-      errorCorrectionLevel: "M",
+      errorCorrectionLevel: "H",
       margin: 2,
       scale: 8,
       color: {
@@ -448,6 +460,7 @@ function PaymentQrImage({ value, status }: { value: string; status: OrderStatus 
   return (
     <div className="pay-qr-image-wrap">
       {imageUrl ? <img className="pay-qr-image" src={imageUrl} alt="付款二维码" /> : null}
+      {imageUrl ? <PaymentQrChannelIcon channel={channel} /> : null}
       {status === "expired" ? <div className="pay-qr-overlay">已过期</div> : null}
       {settled ? <div className="pay-qr-overlay">已支付</div> : null}
     </div>
@@ -500,6 +513,7 @@ function PaymentPageContent({ page }: { page: PaymentPageData }) {
                 <PaymentQrImage
                   value={page.targetPayUrl}
                   status={page.status}
+                  channel={page.paymentChannel}
                 />
               </div>
               <p className={needsExactInput ? "pay-ready-note pay-ready-note-warn" : "pay-ready-note"}>

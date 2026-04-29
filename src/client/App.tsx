@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import QRCodeImage from "qrcode/lib/browser";
 import {
   App as AntApp,
@@ -17,7 +17,6 @@ import {
   Statistic,
   Switch,
   Table,
-  Tabs,
   Tag,
   Tooltip,
   Typography
@@ -30,12 +29,12 @@ import {
   CheckCircleOutlined,
   ClockCircleOutlined,
   CloudSyncOutlined,
-  DatabaseOutlined,
   DeleteOutlined,
   MobileOutlined,
   FileSearchOutlined,
   LockOutlined,
   MenuOutlined,
+  PlusOutlined,
   QrcodeOutlined,
   ReloadOutlined,
   SendOutlined,
@@ -80,7 +79,17 @@ import {
   type Snapshot
 } from "./api";
 
-type ViewKey = "dashboard" | "orders" | "accounts" | "payments" | "logs" | "callbacks";
+type ViewKey =
+  | "dashboard"
+  | "orders"
+  | "paymentAccounts"
+  | "devices"
+  | "amountOccupations"
+  | "qrCodes"
+  | "notificationLogs"
+  | "systemLogs"
+  | "callbacks"
+  | "paymentSettings";
 type Columns<T> = NonNullable<TableProps<T>["columns"]>;
 
 const { Header, Sider, Content } = Layout;
@@ -108,22 +117,46 @@ const emptySnapshot: Snapshot = {
 const menuItems: MenuProps["items"] = [
   { key: "dashboard", icon: <AppstoreOutlined />, label: "仪表盘" },
   { key: "orders", icon: <WalletOutlined />, label: "订单管理" },
-  { key: "accounts", icon: <ApiOutlined />, label: "收款账号" },
-  { key: "payments", icon: <DatabaseOutlined />, label: "收款码" },
-  { key: "logs", icon: <FileSearchOutlined />, label: "日志中心" },
-  { key: "callbacks", icon: <CloudSyncOutlined />, label: "回调管理" }
+  { key: "paymentAccounts", icon: <ApiOutlined />, label: "收款账号" },
+  { key: "devices", icon: <MobileOutlined />, label: "安卓设备" },
+  { key: "amountOccupations", icon: <ClockCircleOutlined />, label: "金额占用" },
+  { key: "qrCodes", icon: <QrcodeOutlined />, label: "定额二维码" },
+  { key: "notificationLogs", icon: <BellOutlined />, label: "通知日志" },
+  { key: "systemLogs", icon: <FileSearchOutlined />, label: "系统日志" },
+  { key: "callbacks", icon: <CloudSyncOutlined />, label: "回调管理" },
+  { key: "paymentSettings", icon: <SettingOutlined />, label: "付款页设置" }
 ];
 
 const rememberedViewStorageKey = "peerpay.admin.activeView.v1";
-const viewKeys = new Set<ViewKey>(["dashboard", "orders", "accounts", "payments", "logs", "callbacks"]);
+const viewKeys = new Set<ViewKey>([
+  "dashboard",
+  "orders",
+  "paymentAccounts",
+  "devices",
+  "amountOccupations",
+  "qrCodes",
+  "notificationLogs",
+  "systemLogs",
+  "callbacks",
+  "paymentSettings"
+]);
+const legacyViewKeys: Record<string, ViewKey> = {
+  accounts: "paymentAccounts",
+  payments: "amountOccupations",
+  logs: "notificationLogs"
+};
 
 const viewTitles: Record<ViewKey, string> = {
   dashboard: "仪表盘",
   orders: "订单管理",
-  accounts: "收款账号",
-  payments: "收款码",
-  logs: "日志中心",
-  callbacks: "回调管理"
+  paymentAccounts: "收款账号",
+  devices: "安卓设备",
+  amountOccupations: "金额占用",
+  qrCodes: "定额二维码",
+  notificationLogs: "通知日志",
+  systemLogs: "系统日志",
+  callbacks: "回调管理",
+  paymentSettings: "付款页设置"
 };
 
 const statusColor: Record<string, string> = {
@@ -228,6 +261,9 @@ function isViewKey(value: unknown): value is ViewKey {
 function rememberedViewKey(): ViewKey {
   try {
     const value = window.localStorage.getItem(rememberedViewStorageKey);
+    if (value && legacyViewKeys[value]) {
+      return legacyViewKeys[value];
+    }
     return isViewKey(value) ? value : "dashboard";
   } catch {
     return "dashboard";
@@ -240,6 +276,19 @@ function rememberViewKey(value: ViewKey) {
   } catch {
     // Ignore storage failures so private browsing or quota issues do not block navigation.
   }
+}
+
+function PeerPayMark() {
+  return (
+    <span className="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 36 36" role="img" focusable="false">
+        <path className="brand-mark-route" d="M10.5 23.5c4.7-1 9.9-4.4 15-10" />
+        <path className="brand-mark-p" d="M11.2 26V10.5h8.4c4 0 6.7 2.3 6.7 5.9s-2.7 5.9-6.7 5.9h-4.5" />
+        <circle className="brand-mark-dot brand-mark-dot-a" cx="11.2" cy="25.8" r="3.2" />
+        <circle className="brand-mark-dot brand-mark-dot-b" cx="25.6" cy="10.8" r="3.2" />
+      </svg>
+    </span>
+  );
 }
 
 interface GateProps {
@@ -269,7 +318,7 @@ function AdminGate({ mode, onDone }: GateProps) {
     <div className="auth-page">
       <div className="auth-panel">
         <div className="brand auth-brand">
-          <div className="brand-mark">P</div>
+          <PeerPayMark />
           <div>
             <div className="brand-title">PeerPay</div>
             <Text type="secondary">{mode === "setup" ? "初始化管理后台" : "管理后台登录"}</Text>
@@ -899,10 +948,32 @@ function PaymentPageSettingsModal({ settings, open, onCancel, onRefresh }: Payme
   );
 }
 
+interface PageHeadingProps {
+  title: string;
+  description: string;
+  actions?: ReactNode;
+}
+
+function PageHeading({ title, description, actions }: PageHeadingProps) {
+  return (
+    <section className="page-heading">
+      <div className="page-heading-copy">
+        <Title level={4}>{title}</Title>
+        <Text type="secondary">{description}</Text>
+      </div>
+      {actions ? <div className="page-actions">{actions}</div> : null}
+    </section>
+  );
+}
+
 function DashboardView({ snapshot }: { snapshot: Snapshot }) {
   const stats = snapshot.dashboard;
   return (
     <div className="view-stack">
+      <PageHeading
+        title="运行概览"
+        description="查看订单状态、到账能力、金额占用和最近订单，新增配置请进入对应的业务页面。"
+      />
       <section className="metrics-grid">
         <div className={metricClass("blue")}>
           <Statistic title="订单总数" value={stats.orders.total} prefix={<WalletOutlined />} />
@@ -1211,10 +1282,6 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
 
   const toolbar = useMemo(() => (
     <Space className="app-toolbar" wrap>
-      <Button type="primary" icon={<MobileOutlined />} onClick={() => setDeviceEnrollOpen(true)}>设备配对</Button>
-      <Button icon={<DatabaseOutlined />} onClick={() => setQrOpen(true)}>二维码</Button>
-      <Button icon={<ApiOutlined />} onClick={() => setPaymentAccountOpen(true)}>收款账号</Button>
-      <Button icon={<SettingOutlined />} onClick={() => setPaymentPageSettingsOpen(true)}>付款页</Button>
       <Tooltip title="刷新">
         <Button icon={<ReloadOutlined />} loading={loading || isPending} onClick={refresh} />
       </Tooltip>
@@ -1230,45 +1297,139 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     }
     if (activeView === "orders") {
       return (
-        <section className="panel">
-          <Table<Order> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.orders.items} columns={orderColumns} scroll={{ x: 1570 }} pagination={{ total: snapshot.orders.total, pageSize: snapshot.orders.limit, showSizeChanger: false }} />
-        </section>
+        <div className="view-stack">
+          <PageHeading
+            title="订单列表"
+            description="订单由商户系统创建，这里负责查看分配结果、支付状态和必要的人工标记。"
+          />
+          <section className="panel">
+            <Table<Order> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.orders.items} columns={orderColumns} scroll={{ x: 1570 }} pagination={{ total: snapshot.orders.total, pageSize: snapshot.orders.limit, showSizeChanger: false }} />
+          </section>
+        </div>
       );
     }
-    if (activeView === "accounts") {
+    if (activeView === "paymentAccounts") {
       return (
-        <section className="panel">
-          <Tabs items={[
-            { key: "accounts", label: "收款账号", children: <Table<PaymentAccount> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.paymentAccounts} columns={paymentAccountColumns} scroll={{ x: 860 }} pagination={false} /> },
-            { key: "devices", label: "设备", children: <Table<Device> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.devices} columns={deviceColumns} scroll={{ x: 1100 }} pagination={false} /> }
-          ]} />
-        </section>
+        <div className="view-stack">
+          <PageHeading
+            title="收款账号"
+            description="先配置可接单的支付宝或微信账号，再为账号导入定额码或绑定安卓设备。"
+            actions={<Button type="primary" icon={<PlusOutlined />} onClick={() => setPaymentAccountOpen(true)}>创建收款账号</Button>}
+          />
+          <section className="panel">
+            <Table<PaymentAccount> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.paymentAccounts} columns={paymentAccountColumns} scroll={{ x: 860 }} pagination={false} />
+          </section>
+        </div>
       );
     }
-    if (activeView === "payments") {
+    if (activeView === "devices") {
       return (
-        <section className="panel">
-          <Tabs items={[
-            { key: "occupied", label: "占用金额", children: <Table<AmountOccupation> size="small" rowKey="orderId" loading={loading || isPending} dataSource={snapshot.occupations.items} columns={occupationColumns} scroll={{ x: 990 }} pagination={{ total: snapshot.occupations.total, pageSize: snapshot.occupations.limit, showSizeChanger: false }} /> },
-            { key: "qrcodes", label: "定额二维码", children: <Table<PresetQrCode> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.qrCodes.items} columns={qrColumns} scroll={{ x: 1100 }} pagination={{ total: snapshot.qrCodes.total, pageSize: snapshot.qrCodes.limit, showSizeChanger: false }} /> }
-          ]} />
-        </section>
+        <div className="view-stack">
+          <PageHeading
+            title="安卓设备"
+            description="每台监听端扫码配对后绑定到一个或多个收款账号，用于上报到账通知和心跳状态。"
+            actions={<Button type="primary" icon={<PlusOutlined />} onClick={() => setDeviceEnrollOpen(true)}>设备配对</Button>}
+          />
+          <section className="panel">
+            <Table<Device> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.devices} columns={deviceColumns} scroll={{ x: 1100 }} pagination={false} />
+          </section>
+        </div>
       );
     }
-    if (activeView === "logs") {
+    if (activeView === "amountOccupations") {
       return (
-        <section className="panel">
-          <Tabs items={[
-            { key: "notifications", label: "通知日志", children: <Table<NotificationLog> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.notifications.items} columns={notificationColumns} scroll={{ x: 1460 }} pagination={{ total: snapshot.notifications.total, pageSize: snapshot.notifications.limit, showSizeChanger: false }} /> },
-            { key: "system", label: "系统日志", children: <Table<SystemLog> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.systemLogs.items} columns={systemLogColumns} scroll={{ x: 720 }} pagination={{ total: snapshot.systemLogs.total, pageSize: snapshot.systemLogs.limit, showSizeChanger: false }} /> }
-          ]} />
-        </section>
+        <div className="view-stack">
+          <PageHeading
+            title="金额占用"
+            description="展示当前 pending 订单占用的实付金额，用于判断同金额并发和偏移分配情况。"
+          />
+          <section className="panel">
+            <Table<AmountOccupation> size="small" rowKey="orderId" loading={loading || isPending} dataSource={snapshot.occupations.items} columns={occupationColumns} scroll={{ x: 990 }} pagination={{ total: snapshot.occupations.total, pageSize: snapshot.occupations.limit, showSizeChanger: false }} />
+          </section>
+        </div>
       );
     }
+    if (activeView === "qrCodes") {
+      return (
+        <div className="view-stack">
+          <PageHeading
+            title="定额二维码"
+            description="导入具体账号下的固定金额收款码。创建订单时会优先匹配对应账号和金额。"
+            actions={<Button type="primary" icon={<PlusOutlined />} onClick={() => setQrOpen(true)}>导入二维码</Button>}
+          />
+          <section className="panel">
+            <Table<PresetQrCode> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.qrCodes.items} columns={qrColumns} scroll={{ x: 1100 }} pagination={{ total: snapshot.qrCodes.total, pageSize: snapshot.qrCodes.limit, showSizeChanger: false }} />
+          </section>
+        </div>
+      );
+    }
+    if (activeView === "notificationLogs") {
+      return (
+        <div className="view-stack">
+          <PageHeading
+            title="通知日志"
+            description="安卓设备上报的到账通知、解析状态和匹配结果都在这里排查。"
+          />
+          <section className="panel">
+            <Table<NotificationLog> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.notifications.items} columns={notificationColumns} scroll={{ x: 1460 }} pagination={{ total: snapshot.notifications.total, pageSize: snapshot.notifications.limit, showSizeChanger: false }} />
+          </section>
+        </div>
+      );
+    }
+    if (activeView === "systemLogs") {
+      return (
+        <div className="view-stack">
+          <PageHeading
+            title="系统日志"
+            description="服务端记录的关键动作、异常和运行消息，用于定位配置或回调问题。"
+          />
+          <section className="panel">
+            <Table<SystemLog> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.systemLogs.items} columns={systemLogColumns} scroll={{ x: 720 }} pagination={{ total: snapshot.systemLogs.total, pageSize: snapshot.systemLogs.limit, showSizeChanger: false }} />
+          </section>
+        </div>
+      );
+    }
+    if (activeView === "callbacks") {
+      return (
+        <div className="view-stack">
+          <PageHeading
+            title="回调管理"
+            description="查看商户回调投递状态。失败回调可在表格行内重发，不需要单独创建。"
+          />
+          <section className="panel">
+            <Table<CallbackLog> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.callbacks.items} columns={callbackColumns} scroll={{ x: 1120 }} pagination={{ total: snapshot.callbacks.total, pageSize: snapshot.callbacks.limit, showSizeChanger: false }} />
+          </section>
+        </div>
+      );
+    }
+    const settings = snapshot.paymentPageSettings;
     return (
-      <section className="panel">
-        <Table<CallbackLog> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.callbacks.items} columns={callbackColumns} scroll={{ x: 1120 }} pagination={{ total: snapshot.callbacks.total, pageSize: snapshot.callbacks.limit, showSizeChanger: false }} />
-      </section>
+      <div className="view-stack">
+        <PageHeading
+          title="付款页设置"
+          description="配置用户付款页展示的公告内容。这里不会创建订单，只影响付款页说明信息。"
+          actions={<Button type="primary" icon={<SettingOutlined />} onClick={() => setPaymentPageSettingsOpen(true)}>编辑付款页</Button>}
+        />
+        <section className="settings-grid">
+          <div className="setting-cell">
+            <Text type="secondary">公告状态</Text>
+            <strong>{settings.noticeEnabled ? "已开启" : "未开启"}</strong>
+            <Tag color={settings.noticeEnabled ? "success" : "default"}>{settings.noticeEnabled ? "展示中" : "隐藏"}</Tag>
+          </div>
+          <div className="setting-cell">
+            <Text type="secondary">公告标题</Text>
+            <strong>{settings.noticeTitle || "-"}</strong>
+          </div>
+          <div className="setting-cell setting-cell-wide">
+            <Text type="secondary">公告内容</Text>
+            <p>{settings.noticeBody || "-"}</p>
+          </div>
+          <div className="setting-cell setting-cell-wide">
+            <Text type="secondary">链接</Text>
+            <p className="break-text">{settings.noticeLinkText || "-"} {settings.noticeLinkUrl ? `· ${settings.noticeLinkUrl}` : ""}</p>
+          </div>
+        </section>
+      </div>
     );
   }, [
     activeView,
@@ -1289,7 +1450,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     <Layout className="app-shell" hasSider>
       <Sider width={224} theme="light" className="app-sider">
         <div className="brand">
-          <div className="brand-mark">P</div>
+          <PeerPayMark />
           <div>
             <div className="brand-title">PeerPay</div>
             <Text type="secondary">轻量收款服务</Text>
@@ -1324,7 +1485,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
         onClose={() => setMobileMenuOpen(false)}
       >
         <div className="brand mobile-drawer-brand">
-          <div className="brand-mark">P</div>
+          <PeerPayMark />
           <div>
             <div className="brand-title">PeerPay</div>
             <Text type="secondary">轻量收款服务</Text>

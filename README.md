@@ -79,10 +79,10 @@ curl -X POST http://localhost:3000/api/payment-accounts \
 ```bash
 curl -X POST http://localhost:3000/api/orders \
   -H 'content-type: application/json' \
-  -d '{"paymentChannel":"alipay","amount":"10.00","merchantOrderId":"m-10001","callbackUrl":"https://merchant.example/webhook","callbackSecret":"secret"}'
+  -d '{"paymentChannel":"alipay","amount":"10.00","merchantOrderId":"m-10001","callbackUrl":"https://merchant.example/webhook","callbackSecret":"secret","redirectUrl":"https://merchant.example/orders/m-10001/result"}'
 ```
 
-返回字段里的 `paymentAccountCode` 是实际分配的收款账号，`actualAmount` 是用户实际应付金额，`payUrl` 是售货系统展示给用户扫码的 URL：
+返回字段里的 `paymentAccountCode` 是实际分配的收款账号，`actualAmount` 是用户实际应付金额，`payUrl` 是售货系统展示给用户扫码的 URL。传入 `redirectUrl` 后，PeerPay 付款页在确认支付成功后会自动跳回该商户地址；创建订单时也兼容旧字段名 `redirect_url`、`returnUrl`、`return_url`：
 
 ```json
 {
@@ -92,7 +92,8 @@ curl -X POST http://localhost:3000/api/orders \
   "paymentChannel": "alipay",
   "payMode": "fallback",
   "amountInputRequired": true,
-  "payUrl": "https://pay.example/fallback"
+  "payUrl": "https://pay.example/pay/ord_xxx",
+  "redirectUrl": "https://merchant.example/orders/m-10001/result"
 }
 ```
 

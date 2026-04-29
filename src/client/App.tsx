@@ -224,6 +224,10 @@ function formatDate(value: string | null) {
   return value ? new Date(value).toLocaleString() : "-";
 }
 
+function isPaidStatus(status: OrderStatus) {
+  return status === "paid" || status === "notified";
+}
+
 function metricClass(value: "blue" | "green" | "amber" | "red") {
   return `metric metric-${value}`;
 }
@@ -452,7 +456,7 @@ function PaymentQrImage({ value, status }: { value: string; status: OrderStatus 
 
 function PaymentPageContent({ page }: { page: PaymentPageData }) {
   const payable = page.status === "pending";
-  const paid = page.status === "paid" || page.status === "notified";
+  const paid = isPaidStatus(page.status);
   const needsExactInput = page.amountInputRequired;
   const canOpenPayUrl = page.paymentChannel === "alipay" && isStandardHttpsUrl(page.targetPayUrl);
   const channelTone = page.paymentChannel === "wechat" ? "wechat" : "alipay";
@@ -480,7 +484,7 @@ function PaymentPageContent({ page }: { page: PaymentPageData }) {
             <div className="pay-success-icon"><CheckCircleOutlined /></div>
             <div>
               <strong>支付成功</strong>
-              <p>系统已确认收到 ¥{page.actualAmount}，请勿重复付款。</p>
+              <p>{page.redirectUrl ? `系统已确认收到 ¥${page.actualAmount}，正在返回商户页面。` : `系统已确认收到 ¥${page.actualAmount}，请勿重复付款。`}</p>
             </div>
           </section>
         ) : null}
@@ -607,7 +611,12 @@ export function PaymentPageApp() {
         }
         setPage(nextPage);
         setError("");
-        if (nextPage.status === "pending") {
+        const redirectUrl = isPaidStatus(nextPage.status) ? nextPage.redirectUrl : null;
+        if (redirectUrl) {
+          timer = window.setTimeout(() => {
+            window.location.assign(redirectUrl);
+          }, 1200);
+        } else if (nextPage.status === "pending") {
           timer = window.setTimeout(loadPaymentPage, PAYMENT_PAGE_POLL_MS);
         }
       } catch (nextError) {

@@ -64,6 +64,7 @@ export interface Order {
   status: OrderStatus;
   subject: string | null;
   callbackUrl: string | null;
+  redirectUrl: string | null;
   expireAt: string;
   paidAt: string | null;
   notifiedAt: string | null;
@@ -99,6 +100,7 @@ export interface PaymentPageData {
   amountInputRequired: boolean;
   status: OrderStatus;
   subject: string | null;
+  redirectUrl: string | null;
   expireAt: string;
   notice: PaymentPageNotice | null;
 }
@@ -198,6 +200,10 @@ export interface CreateOrderInput {
   subject?: string;
   callbackUrl?: string;
   callbackSecret?: string;
+  redirectUrl?: string;
+  redirect_url?: string;
+  returnUrl?: string;
+  return_url?: string;
   ttlMinutes?: number;
 }
 

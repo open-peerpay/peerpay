@@ -11,6 +11,7 @@ store 创建业务订单
 -> store 跳转/展示 PeerPay 付款页
 -> 用户扫码付款
 -> PeerPay 匹配到账通知并标记 paid
+-> PeerPay 付款页自动跳回 store redirectUrl（如已传）
 -> PeerPay POST 回调 store callbackUrl
 -> store 验签、更新业务订单、返回 2xx
 -> PeerPay 标记订单 notified
@@ -71,6 +72,7 @@ Content-Type: application/json
 | `subject` | `string` | 否 | 商品/订单标题，会展示在 PeerPay 付款页 |
 | `callbackUrl` | `string` | 否 | 支付成功后 PeerPay 回调 store 的 HTTPS/HTTP 地址 |
 | `callbackSecret` | `string` | 条件必填 | 传了 `callbackUrl` 时必须传，用于回调签名 |
+| `redirectUrl` | `string` | 否 | 支付页确认成功后浏览器自动跳回的 store 页面，必须是 HTTP/HTTPS 地址；兼容旧字段名 `redirect_url`、`returnUrl`、`return_url` |
 | `ttlMinutes` | `number` | 否 | 订单有效期，默认 `15` 分钟，范围会被限制在 `1` 到 `1440` 分钟 |
 
 示例：
@@ -85,6 +87,7 @@ curl -X POST https://pay.example.com/api/orders \
     "subject": "会员月卡",
     "callbackUrl": "https://store.example.com/payments/peerpay/callback",
     "callbackSecret": "replace-with-store-order-secret",
+    "redirectUrl": "https://store.example.com/orders/store-20260428-10001/result",
     "ttlMinutes": 15
   }'
 ```
@@ -112,6 +115,7 @@ curl -X POST https://pay.example.com/api/orders \
     "status": "pending",
     "subject": "会员月卡",
     "callbackUrl": "https://store.example.com/payments/peerpay/callback",
+    "redirectUrl": "https://store.example.com/orders/store-20260428-10001/result",
     "expireAt": "2026-04-28T03:15:00.000Z",
     "paidAt": null,
     "notifiedAt": null,
@@ -135,6 +139,7 @@ curl -X POST https://pay.example.com/api/orders \
 | `payMode` | `preset` 表示定额码，`fallback` 表示通用码 |
 | `amountInputRequired` | 为 `true` 时用户必须在付款 App 手动输入 `actualAmount` |
 | `status` | `pending`、`paid`、`notified`、`expired` |
+| `redirectUrl` | 创建订单时传入的支付成功后浏览器跳转地址，可能为 `null` |
 | `expireAt` | 订单过期时间，ISO 8601 字符串 |
 
 注意：`merchantOrderId` 当前用于关联和排查，不做唯一约束，也不提供幂等去重。store 遇到网络超时后应避免盲目重复创建，建议在自己的业务订单中记录 PeerPay `id` 和 `payUrl`。
@@ -153,6 +158,7 @@ PeerPay 付款页会自动：
 2. 展示 `actualAmount`。
 3. 在 `amountInputRequired=true` 时提示用户手动输入精确金额。
 4. 每 3 秒轮询订单状态，支付成功后展示已支付。
+5. 如果创建订单时传了 `redirectUrl`，支付成功后自动跳回该地址。
 
 如果 store 要自研收银台，可以调用付款页数据接口：
 
@@ -177,6 +183,7 @@ GET /api/pay/:orderId
     "amountInputRequired": true,
     "status": "pending",
     "subject": "会员月卡",
+    "redirectUrl": "https://store.example.com/orders/store-20260428-10001/result",
     "expireAt": "2026-04-28T03:15:00.000Z",
     "notice": null
   }

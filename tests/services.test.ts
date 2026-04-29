@@ -107,6 +107,48 @@ test("requires callback secret when callback url is provided", () => {
   })).toThrow("callbackSecret");
 });
 
+test("stores redirect url on orders and public payment page data", () => {
+  const order = createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "10.00",
+    merchantOrderId: "redirect-url",
+    redirectUrl: "https://merchant.example/orders/redirect-url?paid=1",
+    ttlMinutes: 10
+  });
+
+  expect(order.redirectUrl).toBe("https://merchant.example/orders/redirect-url?paid=1");
+  expect(getPublicPaymentPage(ctx, order.id).redirectUrl).toBe(order.redirectUrl);
+  expect(() => createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "10.01",
+    merchantOrderId: "invalid-redirect-url",
+    redirectUrl: "javascript:alert(1)"
+  })).toThrow("重定向地址");
+
+  const snakeCaseOrder = createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "10.02",
+    merchantOrderId: "legacy-redirect-url",
+    redirect_url: "https://merchant.example/orders/legacy-redirect-url"
+  });
+  const returnUrlOrder = createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "10.03",
+    merchantOrderId: "legacy-return-url",
+    returnUrl: "https://merchant.example/orders/legacy-return-url"
+  });
+  const snakeCaseReturnUrlOrder = createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "10.04",
+    merchantOrderId: "legacy-return-url-snake",
+    return_url: "https://merchant.example/orders/legacy-return-url-snake"
+  });
+
+  expect(snakeCaseOrder.redirectUrl).toBe("https://merchant.example/orders/legacy-redirect-url");
+  expect(returnUrlOrder.redirectUrl).toBe("https://merchant.example/orders/legacy-return-url");
+  expect(snakeCaseReturnUrlOrder.redirectUrl).toBe("https://merchant.example/orders/legacy-return-url-snake");
+});
+
 test("allocates same amount across payment accounts before offsetting", () => {
   const first = createOrder(ctx, {
     paymentChannel: "alipay",
@@ -336,12 +378,14 @@ test("order api returns an absolute payment page url", async () => {
     body: JSON.stringify({
       paymentChannel: "alipay",
       amount: "17.00",
-      merchantOrderId: "api-pay-page"
+      merchantOrderId: "api-pay-page",
+      redirectUrl: "https://merchant.example/orders/api-pay-page"
     })
   }));
   const payload = await response.json() as { data: Order };
 
   expect(payload.data.payUrl).toBe(`https://peerpay.test${paymentPagePath(payload.data.id)}`);
+  expect(payload.data.redirectUrl).toBe("https://merchant.example/orders/api-pay-page");
 
   const publicResponse = await routes["/api/pay/:id"].GET(Object.assign(
     new Request(`https://peerpay.test/api/pay/${payload.data.id}`),
@@ -351,6 +395,7 @@ test("order api returns an absolute payment page url", async () => {
 
   expect(publicPayload.data.orderId).toBe(payload.data.id);
   expect(publicPayload.data.targetPayUrl).toBe("https://pay.example/alipay-a");
+  expect(publicPayload.data.redirectUrl).toBe("https://merchant.example/orders/api-pay-page");
 });
 
 test("preset qr code checked api toggles the flag", async () => {

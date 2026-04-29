@@ -103,6 +103,7 @@ interface OrderRow {
   status: OrderStatus;
   subject: string | null;
   callback_url: string | null;
+  redirect_url: string | null;
   expire_at: string;
   paid_at: string | null;
   notified_at: string | null;
@@ -281,6 +282,7 @@ function mapOrder(row: OrderRow): Order {
     status: row.status,
     subject: row.subject,
     callbackUrl: row.callback_url,
+    redirectUrl: row.redirect_url,
     expireAt: row.expire_at,
     paidAt: row.paid_at,
     notifiedAt: row.notified_at,
@@ -520,8 +522,8 @@ function normalizePayUrl(value: string | null | undefined, optional = false) {
   }
 }
 
-function normalizeOptionalHttpUrl(value: string | null | undefined) {
-  const text = value?.trim() ?? "";
+function normalizeOptionalHttpUrl(value: unknown, label = "公告链接") {
+  const text = String(value ?? "").trim();
   if (!text) {
     return null;
   }
@@ -533,8 +535,12 @@ function normalizeOptionalHttpUrl(value: string | null | undefined) {
     }
     return url.toString();
   } catch {
-    throw apiError(400, "公告链接必须是有效的 http/https 地址");
+    throw apiError(400, `${label}必须是有效的 http/https 地址`);
   }
+}
+
+function firstNonEmptyValue(...values: unknown[]) {
+  return values.find((value) => String(value ?? "").trim()) ?? null;
 }
 
 function textWithin(value: string | null | undefined, label: string, maxLength: number) {
@@ -667,6 +673,7 @@ export function getPublicPaymentPage(ctx: AppContext, id: string): PaymentPageDa
     amountInputRequired: row.amount_input_required === 1,
     status: row.status,
     subject: row.subject,
+    redirectUrl: row.redirect_url,
     expireAt: row.expire_at,
     notice
   };
@@ -1011,6 +1018,10 @@ export function createOrder(ctx: AppContext, input: CreateOrderInput) {
   const id = createOrderId();
   const callbackUrl = input.callbackUrl?.trim() || null;
   const callbackSecret = input.callbackSecret?.trim() || null;
+  const redirectUrl = normalizeOptionalHttpUrl(
+    firstNonEmptyValue(input.redirectUrl, input.redirect_url, input.returnUrl, input.return_url),
+    "重定向地址"
+  );
 
   if (callbackUrl && !callbackSecret) {
     throw apiError(400, "设置回调地址时必须提供 callbackSecret");
@@ -1022,9 +1033,9 @@ export function createOrder(ctx: AppContext, input: CreateOrderInput) {
     ctx.db.query(`
       INSERT INTO orders(
         id, merchant_order_id, payment_account_id, payment_channel, requested_amount_cents, actual_amount_cents,
-        pay_url, pay_mode, amount_input_required, status, subject, callback_url, callback_secret, expire_at, created_at, updated_at
+        pay_url, pay_mode, amount_input_required, status, subject, callback_url, callback_secret, redirect_url, expire_at, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       input.merchantOrderId?.trim() || null,
@@ -1038,6 +1049,7 @@ export function createOrder(ctx: AppContext, input: CreateOrderInput) {
       input.subject?.trim() || null,
       callbackUrl,
       callbackSecret,
+      redirectUrl,
       expireAt,
       now,
       now

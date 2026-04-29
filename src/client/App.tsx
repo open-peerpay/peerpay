@@ -4,6 +4,7 @@ import {
   App as AntApp,
   Button,
   ConfigProvider,
+  Drawer,
   Form,
   Input,
   InputNumber,
@@ -34,6 +35,7 @@ import {
   MobileOutlined,
   FileSearchOutlined,
   LockOutlined,
+  MenuOutlined,
   QrcodeOutlined,
   ReloadOutlined,
   SendOutlined,
@@ -928,14 +930,15 @@ function DashboardView({ snapshot }: { snapshot: Snapshot }) {
           rowKey="id"
           pagination={false}
           dataSource={snapshot.orders.items.slice(0, 8)}
+          scroll={{ x: 840 }}
           columns={[
             { title: "订单号", dataIndex: "id", ellipsis: true },
-            { title: "收款账号", dataIndex: "paymentAccountCode", width: 120 },
+            { title: "收款账号", dataIndex: "paymentAccountCode", width: 120, responsive: ["sm"] },
             { title: "实付金额", dataIndex: "actualAmount", width: 110 },
-            { title: "方式", dataIndex: "paymentChannel", width: 90, render: (value) => <PaymentChannelTag value={value} /> },
-            { title: "付款", dataIndex: "payMode", width: 110, render: (value) => <StatusTag value={String(value)} /> },
+            { title: "方式", dataIndex: "paymentChannel", width: 90, responsive: ["sm"], render: (value) => <PaymentChannelTag value={value} /> },
+            { title: "付款", dataIndex: "payMode", width: 110, responsive: ["md"], render: (value) => <StatusTag value={String(value)} /> },
             { title: "状态", dataIndex: "status", width: 110, render: (value) => <StatusTag value={String(value)} /> },
-            { title: "创建时间", dataIndex: "createdAt", width: 190, render: formatDate }
+            { title: "创建时间", dataIndex: "createdAt", width: 190, responsive: ["sm"], render: formatDate }
           ]}
         />
       </section>
@@ -946,6 +949,7 @@ function DashboardView({ snapshot }: { snapshot: Snapshot }) {
 function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
   const { message } = AntApp.useApp();
   const [activeView, setActiveView] = useState<ViewKey>(() => rememberedViewKey());
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [snapshot, setSnapshot] = useState<Snapshot>(emptySnapshot);
   const [loading, setLoading] = useState(true);
   const [isPending, startTransition] = useTransition();
@@ -1016,6 +1020,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
 
     setActiveView(key);
     rememberViewKey(key);
+    setMobileMenuOpen(false);
   }, []);
 
   const handleRetryCallback = useCallback(async (id: number) => {
@@ -1048,20 +1053,19 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
 
   const orderColumns = useMemo<Columns<Order>>(() => [
     { title: "订单号", dataIndex: "id", width: 220, ellipsis: true },
-    { title: "商户单号", dataIndex: "merchantOrderId", width: 160, ellipsis: true, render: (value) => value || "-" },
-    { title: "收款账号", dataIndex: "paymentAccountCode", width: 120, render: (value) => value || "-" },
-    { title: "方式", dataIndex: "paymentChannel", width: 90, render: (value) => <PaymentChannelTag value={value} /> },
-    { title: "订单金额", dataIndex: "requestedAmount", width: 110 },
+    { title: "商户单号", dataIndex: "merchantOrderId", width: 160, ellipsis: true, responsive: ["md"], render: (value) => value || "-" },
+    { title: "收款账号", dataIndex: "paymentAccountCode", width: 120, responsive: ["sm"], render: (value) => value || "-" },
+    { title: "方式", dataIndex: "paymentChannel", width: 90, responsive: ["sm"], render: (value) => <PaymentChannelTag value={value} /> },
+    { title: "订单金额", dataIndex: "requestedAmount", width: 110, responsive: ["md"] },
     { title: "实付金额", dataIndex: "actualAmount", width: 110 },
-    { title: "付款", dataIndex: "payMode", width: 110, render: (value) => <StatusTag value={String(value)} /> },
+    { title: "付款", dataIndex: "payMode", width: 110, responsive: ["md"], render: (value) => <StatusTag value={String(value)} /> },
     { title: "状态", dataIndex: "status", width: 110, render: (value) => <StatusTag value={String(value)} /> },
-    { title: "付款 URL", dataIndex: "payUrl", ellipsis: true },
-    { title: "过期时间", dataIndex: "expireAt", width: 190, render: formatDate },
+    { title: "付款 URL", dataIndex: "payUrl", ellipsis: true, responsive: ["lg"] },
+    { title: "过期时间", dataIndex: "expireAt", width: 190, responsive: ["lg"], render: formatDate },
     {
       title: "操作",
       key: "actions",
       width: 120,
-      fixed: "right",
       render: (_, record) => (
         <Space size="small">
           <Tooltip title="标记支付">
@@ -1077,17 +1081,17 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
 
   const occupationColumns = useMemo<Columns<AmountOccupation>>(() => [
     { title: "订单号", dataIndex: "orderId", width: 220, ellipsis: true },
-    { title: "收款账号", dataIndex: "paymentAccountCode", width: 120, render: (value) => value || "-" },
-    { title: "方式", dataIndex: "paymentChannel", width: 90, render: (value) => <PaymentChannelTag value={value} /> },
-    { title: "订单金额", dataIndex: "requestedAmount", width: 110 },
+    { title: "收款账号", dataIndex: "paymentAccountCode", width: 120, responsive: ["sm"], render: (value) => value || "-" },
+    { title: "方式", dataIndex: "paymentChannel", width: 90, responsive: ["sm"], render: (value) => <PaymentChannelTag value={value} /> },
+    { title: "订单金额", dataIndex: "requestedAmount", width: 110, responsive: ["md"] },
     { title: "占用金额", dataIndex: "actualAmount", width: 110 },
-    { title: "付款", dataIndex: "payMode", width: 110, render: (value) => <StatusTag value={String(value)} /> },
-    { title: "过期时间", dataIndex: "expireAt", width: 190, render: formatDate }
+    { title: "付款", dataIndex: "payMode", width: 110, responsive: ["md"], render: (value) => <StatusTag value={String(value)} /> },
+    { title: "过期时间", dataIndex: "expireAt", width: 190, responsive: ["sm"], render: formatDate }
   ], []);
 
   const qrColumns = useMemo<Columns<PresetQrCode>>(() => [
-    { title: "收款账号", dataIndex: "paymentAccountCode", width: 120, render: (value) => value || "-" },
-    { title: "方式", dataIndex: "paymentChannel", width: 90, render: (value) => <PaymentChannelTag value={value} /> },
+    { title: "收款账号", dataIndex: "paymentAccountCode", width: 120, responsive: ["sm"], render: (value) => value || "-" },
+    { title: "方式", dataIndex: "paymentChannel", width: 90, responsive: ["sm"], render: (value) => <PaymentChannelTag value={value} /> },
     { title: "金额", dataIndex: "amount", width: 110 },
     {
       title: "付款 URL",
@@ -1116,12 +1120,11 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
         />
       )
     },
-    { title: "更新时间", dataIndex: "updatedAt", width: 190, render: formatDate },
+    { title: "更新时间", dataIndex: "updatedAt", width: 190, responsive: ["md"], render: formatDate },
     {
       title: "操作",
       key: "actions",
       width: 80,
-      fixed: "right",
       render: (_, record) => (
         <Tooltip title="删除">
           <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDeleteQr(record.id)} />
@@ -1133,11 +1136,11 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
   const paymentAccountColumns = useMemo<Columns<PaymentAccount>>(() => [
     { title: "编码", dataIndex: "code", width: 140 },
     { title: "名称", dataIndex: "name" },
-    { title: "方式", dataIndex: "paymentChannel", width: 90, render: (value) => <PaymentChannelTag value={value} /> },
-    { title: "优先级", dataIndex: "priority", width: 90 },
-    { title: "最大偏移", dataIndex: "maxOffsetCents", width: 110, render: (value) => `${value} 分` },
-    { title: "兜底码", dataIndex: "fallbackPayUrl", width: 100, render: (value) => value ? <Tag color="success">已配置</Tag> : <Tag>未配置</Tag> },
-    { title: "关键词", dataIndex: "notificationKeywords", width: 100, render: (value: string[]) => value.length ? <Tag color="processing">{value.length} 个</Tag> : <Tag>不限</Tag> },
+    { title: "方式", dataIndex: "paymentChannel", width: 90, responsive: ["sm"], render: (value) => <PaymentChannelTag value={value} /> },
+    { title: "优先级", dataIndex: "priority", width: 90, responsive: ["md"] },
+    { title: "最大偏移", dataIndex: "maxOffsetCents", width: 110, responsive: ["md"], render: (value) => `${value} 分` },
+    { title: "兜底码", dataIndex: "fallbackPayUrl", width: 100, responsive: ["sm"], render: (value) => value ? <Tag color="success">已配置</Tag> : <Tag>未配置</Tag> },
+    { title: "关键词", dataIndex: "notificationKeywords", width: 100, responsive: ["sm"], render: (value: string[]) => value.length ? <Tag color="processing">{value.length} 个</Tag> : <Tag>不限</Tag> },
     { title: "状态", dataIndex: "enabled", width: 100, render: (value) => value ? <Tag color="success">启用</Tag> : <Tag color="default">停用</Tag> },
     {
       title: "操作",
@@ -1161,44 +1164,45 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
       title: "绑定账号",
       dataIndex: "paymentAccounts",
       width: 240,
+      responsive: ["sm"],
       render: (value: Device["paymentAccounts"]) => value.length
         ? <Space size={[4, 4]} wrap>{value.map((account) => <Tag key={account.id}>{PAYMENT_CHANNEL_LABELS[account.paymentChannel]} · {account.code}</Tag>)}</Space>
         : "-"
     },
     { title: "在线", dataIndex: "online", width: 90, render: (value) => value ? <Tag color="success">在线</Tag> : <Tag>离线</Tag> },
-    { title: "版本", dataIndex: "appVersion", width: 110, render: (value) => value || "-" },
-    { title: "配对时间", dataIndex: "pairedAt", width: 190, render: formatDate },
-    { title: "最后心跳", dataIndex: "lastSeenAt", width: 190, render: formatDate },
+    { title: "版本", dataIndex: "appVersion", width: 110, responsive: ["md"], render: (value) => value || "-" },
+    { title: "配对时间", dataIndex: "pairedAt", width: 190, responsive: ["lg"], render: formatDate },
+    { title: "最后心跳", dataIndex: "lastSeenAt", width: 190, responsive: ["lg"], render: formatDate },
     { title: "启用", key: "enabled", width: 90, render: (_, record) => <Switch checked={record.enabled} onChange={(checked) => handleDeviceToggle(record.id, checked)} /> }
   ], [handleDeviceToggle]);
 
   const notificationColumns = useMemo<Columns<NotificationLog>>(() => [
     { title: "时间", dataIndex: "receivedAt", width: 190, render: formatDate },
-    { title: "收款账号", dataIndex: "paymentAccountCode", width: 120, render: (value) => value || "-" },
-    { title: "设备", dataIndex: "deviceId", width: 160, ellipsis: true, render: (value) => value || "-" },
-    { title: "方式", dataIndex: "paymentChannel", width: 90, render: (value) => <PaymentChannelTag value={value} /> },
-    { title: "包名", dataIndex: "packageName", width: 190, ellipsis: true, render: (value) => value || "-" },
-    { title: "金额", dataIndex: "actualAmount", width: 110, render: (value) => value || "-" },
+    { title: "收款账号", dataIndex: "paymentAccountCode", width: 120, responsive: ["sm"], render: (value) => value || "-" },
+    { title: "设备", dataIndex: "deviceId", width: 160, ellipsis: true, responsive: ["md"], render: (value) => value || "-" },
+    { title: "方式", dataIndex: "paymentChannel", width: 90, responsive: ["sm"], render: (value) => <PaymentChannelTag value={value} /> },
+    { title: "包名", dataIndex: "packageName", width: 190, ellipsis: true, responsive: ["lg"], render: (value) => value || "-" },
+    { title: "金额", dataIndex: "actualAmount", width: 110, responsive: ["sm"], render: (value) => value || "-" },
     { title: "状态", dataIndex: "status", width: 110, render: (value) => <StatusTag value={String(value)} /> },
-    { title: "订单号", dataIndex: "matchedOrderId", width: 220, ellipsis: true, render: (value) => value || "-" },
+    { title: "订单号", dataIndex: "matchedOrderId", width: 220, ellipsis: true, responsive: ["md"], render: (value) => value || "-" },
     { title: "原文", dataIndex: "rawText", ellipsis: true }
   ], []);
 
   const systemLogColumns = useMemo<Columns<SystemLog>>(() => [
     { title: "时间", dataIndex: "createdAt", width: 190, render: formatDate },
     { title: "级别", dataIndex: "level", width: 100, render: (value) => <StatusTag value={String(value)} /> },
-    { title: "动作", dataIndex: "action", width: 180 },
+    { title: "动作", dataIndex: "action", width: 180, responsive: ["md"] },
     { title: "消息", dataIndex: "message", ellipsis: true }
   ], []);
 
   const callbackColumns = useMemo<Columns<CallbackLog>>(() => [
     { title: "订单号", dataIndex: "orderId", width: 220, ellipsis: true },
     { title: "状态", dataIndex: "status", width: 110, render: (value) => <StatusTag value={String(value)} /> },
-    { title: "次数", dataIndex: "attempts", width: 80 },
-    { title: "HTTP", dataIndex: "httpStatus", width: 90, render: (value) => value || "-" },
-    { title: "下次重试", dataIndex: "nextRetryAt", width: 190, render: formatDate },
-    { title: "地址", dataIndex: "url", ellipsis: true },
-    { title: "操作", key: "actions", width: 90, fixed: "right", render: (_, record) => (
+    { title: "次数", dataIndex: "attempts", width: 80, responsive: ["sm"] },
+    { title: "HTTP", dataIndex: "httpStatus", width: 90, responsive: ["sm"], render: (value) => value || "-" },
+    { title: "下次重试", dataIndex: "nextRetryAt", width: 190, responsive: ["md"], render: formatDate },
+    { title: "地址", dataIndex: "url", ellipsis: true, responsive: ["md"] },
+    { title: "操作", key: "actions", width: 90, render: (_, record) => (
       <Tooltip title="重发">
         <Button size="small" icon={<SendOutlined />} disabled={record.status === "success"} onClick={() => handleRetryCallback(record.id)} />
       </Tooltip>
@@ -1206,7 +1210,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
   ], [handleRetryCallback]);
 
   const toolbar = useMemo(() => (
-    <Space wrap>
+    <Space className="app-toolbar" wrap>
       <Button type="primary" icon={<MobileOutlined />} onClick={() => setDeviceEnrollOpen(true)}>设备配对</Button>
       <Button icon={<DatabaseOutlined />} onClick={() => setQrOpen(true)}>二维码</Button>
       <Button icon={<ApiOutlined />} onClick={() => setPaymentAccountOpen(true)}>收款账号</Button>
@@ -1235,7 +1239,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
       return (
         <section className="panel">
           <Tabs items={[
-            { key: "accounts", label: "收款账号", children: <Table<PaymentAccount> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.paymentAccounts} columns={paymentAccountColumns} pagination={false} /> },
+            { key: "accounts", label: "收款账号", children: <Table<PaymentAccount> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.paymentAccounts} columns={paymentAccountColumns} scroll={{ x: 860 }} pagination={false} /> },
             { key: "devices", label: "设备", children: <Table<Device> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.devices} columns={deviceColumns} scroll={{ x: 1100 }} pagination={false} /> }
           ]} />
         </section>
@@ -1256,7 +1260,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
         <section className="panel">
           <Tabs items={[
             { key: "notifications", label: "通知日志", children: <Table<NotificationLog> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.notifications.items} columns={notificationColumns} scroll={{ x: 1460 }} pagination={{ total: snapshot.notifications.total, pageSize: snapshot.notifications.limit, showSizeChanger: false }} /> },
-            { key: "system", label: "系统日志", children: <Table<SystemLog> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.systemLogs.items} columns={systemLogColumns} pagination={{ total: snapshot.systemLogs.total, pageSize: snapshot.systemLogs.limit, showSizeChanger: false }} /> }
+            { key: "system", label: "系统日志", children: <Table<SystemLog> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.systemLogs.items} columns={systemLogColumns} scroll={{ x: 720 }} pagination={{ total: snapshot.systemLogs.total, pageSize: snapshot.systemLogs.limit, showSizeChanger: false }} /> }
           ]} />
         </section>
       );
@@ -1283,7 +1287,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
 
   return (
     <Layout className="app-shell" hasSider>
-      <Sider breakpoint="lg" collapsedWidth={0} width={224} theme="light" className="app-sider">
+      <Sider width={224} theme="light" className="app-sider">
         <div className="brand">
           <div className="brand-mark">P</div>
           <div>
@@ -1295,13 +1299,39 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
       </Sider>
       <Layout>
         <Header className="app-header">
-          <div>
-            <Title level={3}>{viewTitles[activeView]}</Title>
+          <div className="app-title-row">
+            <Button
+              className="mobile-menu-button"
+              icon={<MenuOutlined />}
+              aria-label="打开导航菜单"
+              onClick={() => setMobileMenuOpen(true)}
+            />
+            <div className="app-title-copy">
+              <Title level={3}>{viewTitles[activeView]}</Title>
+            </div>
           </div>
           {toolbar}
         </Header>
         <Content className="app-content">{content}</Content>
       </Layout>
+      <Drawer
+        className="mobile-nav-drawer"
+        open={mobileMenuOpen}
+        placement="left"
+        title={null}
+        size={300}
+        styles={{ body: { padding: 0 } }}
+        onClose={() => setMobileMenuOpen(false)}
+      >
+        <div className="brand mobile-drawer-brand">
+          <div className="brand-mark">P</div>
+          <div>
+            <div className="brand-title">PeerPay</div>
+            <Text type="secondary">轻量收款服务</Text>
+          </div>
+        </div>
+        <Menu mode="inline" selectedKeys={[activeView]} items={menuItems} onClick={handleMenuClick} />
+      </Drawer>
       <QrCodeModal paymentAccounts={snapshot.paymentAccounts} open={qrOpen} onCancel={() => setQrOpen(false)} onRefresh={refresh} />
       <DeviceEnrollmentModal paymentAccounts={snapshot.paymentAccounts} open={deviceEnrollOpen} onCancel={() => setDeviceEnrollOpen(false)} onRefresh={refresh} />
       <PaymentAccountModal open={paymentAccountOpen} onCancel={() => setPaymentAccountOpen(false)} onRefresh={refresh} />

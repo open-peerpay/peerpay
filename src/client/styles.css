@@ -13,6 +13,7 @@ body {
   margin: 0;
   color: #111827;
   background: #f6f8fb;
+  overflow-x: hidden;
 }
 
 #root {
@@ -97,13 +98,35 @@ body {
   margin: 0;
 }
 
+.app-title-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.app-title-copy {
+  min-width: 0;
+}
+
+.mobile-menu-button {
+  display: none;
+  flex: 0 0 auto;
+}
+
+.app-toolbar {
+  justify-content: flex-end;
+}
+
 .app-content {
   padding: 20px 24px 36px;
+  min-width: 0;
 }
 
 .view-stack {
   display: grid;
   gap: 16px;
+  min-width: 0;
 }
 
 .metrics-grid {
@@ -140,6 +163,7 @@ body {
 }
 
 .panel {
+  min-width: 0;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   background: #ffffff;
@@ -150,6 +174,7 @@ body {
   margin-bottom: 12px;
   display: flex;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
 }
 
@@ -179,6 +204,11 @@ body {
 
 .table-url {
   max-width: min(420px, 38vw);
+}
+
+.mobile-drawer-brand {
+  border-bottom: 1px solid #e5e7eb;
+  padding: 0 24px;
 }
 
 .qr-preview {
@@ -573,15 +603,51 @@ body {
   }
 }
 
+@media (max-width: 991px) {
+  .app-sider {
+    display: none;
+  }
+
+  .mobile-menu-button {
+    display: inline-flex;
+  }
+}
+
 @media (max-width: 720px) {
+  .auth-page {
+    padding: 16px;
+  }
+
+  .auth-panel {
+    padding: 20px;
+  }
+
   .app-header {
     align-items: flex-start;
     flex-direction: column;
     padding: 12px 16px;
+    gap: 12px;
+  }
+
+  .app-title-row,
+  .app-toolbar {
+    width: 100%;
+  }
+
+  .app-toolbar {
+    justify-content: flex-start;
   }
 
   .app-content {
     padding: 14px 12px 28px;
+  }
+
+  .panel {
+    padding: 12px;
+  }
+
+  .table-url {
+    max-width: 220px;
   }
 
   .metrics-grid {
@@ -590,6 +656,8 @@ body {
 
   .pairing-result {
     grid-template-columns: 1fr;
+    justify-items: center;
+    text-align: center;
   }
 
   .pay-shell {

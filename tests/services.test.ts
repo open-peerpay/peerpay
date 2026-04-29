@@ -25,6 +25,7 @@ import {
   type AppContext
 } from "../server/services";
 import type { Device, EnrollDeviceResult, Order, PaymentAccount, PaymentPageData, PresetQrCode } from "../src/shared/types";
+import { NOTIFICATION_KEYWORD_MAX_LENGTH } from "../src/shared/constants";
 import { getAdminPath, getAdminSessionState, isSetupRequired, loginAdmin, setupAdminPassword } from "../server/auth";
 import { parseMoney } from "../server/money";
 import { createApiRoutes } from "../server/routes";
@@ -539,6 +540,19 @@ test("filters android payment notifications with per-account keywords", () => {
 
   expect(matchedFirst.matched).toBe(true);
   expect(matchedFirst.order?.id).toBe(firstOrder.id);
+});
+
+test("allows longer payment notification keywords", () => {
+  const keyword = "到账通知关键词".repeat(Math.ceil(NOTIFICATION_KEYWORD_MAX_LENGTH / 6)).slice(0, NOTIFICATION_KEYWORD_MAX_LENGTH);
+
+  const updated = updatePaymentAccountSettings(ctx, alipayA.id, {
+    notificationKeywords: [keyword]
+  });
+
+  expect(updated?.notificationKeywords).toEqual([keyword]);
+  expect(() => updatePaymentAccountSettings(ctx, alipayA.id, {
+    notificationKeywords: [`${keyword}超`]
+  })).toThrow(`到账通知关键词不能超过 ${NOTIFICATION_KEYWORD_MAX_LENGTH} 个字符`);
 });
 
 test("routes same-amount wechat notifications to different accounts by keywords", () => {

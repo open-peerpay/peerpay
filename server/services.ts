@@ -2,7 +2,7 @@ import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createDatabase } from "./db";
 import { extractMoneyFromText, formatMoney, parseMoney } from "./money";
-import { DEFAULT_MAX_OFFSET_CENTS, DEFAULT_PAYMENT_CHANNEL } from "../src/shared/constants";
+import { DEFAULT_MAX_OFFSET_CENTS, DEFAULT_PAYMENT_CHANNEL, NOTIFICATION_KEYWORD_MAX_COUNT, NOTIFICATION_KEYWORD_MAX_LENGTH } from "../src/shared/constants";
 import type {
   AndroidNotificationInput,
   AmountOccupation,
@@ -572,8 +572,8 @@ function normalizeKeywordList(value: unknown, label: string) {
     if (!keyword) {
       continue;
     }
-    if (keyword.length > 40) {
-      throw apiError(400, `${label}不能超过 40 个字符`);
+    if (keyword.length > NOTIFICATION_KEYWORD_MAX_LENGTH) {
+      throw apiError(400, `${label}不能超过 ${NOTIFICATION_KEYWORD_MAX_LENGTH} 个字符`);
     }
 
     const key = keyword.toLowerCase();
@@ -584,8 +584,8 @@ function normalizeKeywordList(value: unknown, label: string) {
     keywords.push(keyword);
   }
 
-  if (keywords.length > 30) {
-    throw apiError(400, `${label}不能超过 30 个`);
+  if (keywords.length > NOTIFICATION_KEYWORD_MAX_COUNT) {
+    throw apiError(400, `${label}不能超过 ${NOTIFICATION_KEYWORD_MAX_COUNT} 个`);
   }
 
   return keywords;

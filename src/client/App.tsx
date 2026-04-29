@@ -56,7 +56,14 @@ import type {
   PresetQrCode,
   SystemLog
 } from "../shared/types";
-import { DEFAULT_MAX_OFFSET_CENTS, DEFAULT_PAYMENT_CHANNEL, PAYMENT_CHANNEL_LABELS, PAYMENT_CHANNEL_OPTIONS } from "../shared/constants";
+import {
+  DEFAULT_MAX_OFFSET_CENTS,
+  DEFAULT_PAYMENT_CHANNEL,
+  NOTIFICATION_KEYWORD_MAX_COUNT,
+  NOTIFICATION_KEYWORD_MAX_LENGTH,
+  PAYMENT_CHANNEL_LABELS,
+  PAYMENT_CHANNEL_OPTIONS
+} from "../shared/constants";
 import {
   createDeviceEnrollment,
   createPaymentAccount,
@@ -95,6 +102,8 @@ type Columns<T> = NonNullable<TableProps<T>["columns"]>;
 const { Header, Sider, Content } = Layout;
 const { Text, Title } = Typography;
 const { TextArea } = Input;
+const NOTIFICATION_KEYWORDS_TEXT_MAX_LENGTH =
+  NOTIFICATION_KEYWORD_MAX_COUNT * NOTIFICATION_KEYWORD_MAX_LENGTH + NOTIFICATION_KEYWORD_MAX_COUNT - 1;
 
 const emptySnapshot: Snapshot = {
   dashboard: {
@@ -248,6 +257,17 @@ function normalizeKeywordLines(value: string) {
   }
 
   return keywords;
+}
+
+async function validateNotificationKeywords(_: unknown, value: unknown) {
+  const keywords = normalizeKeywordLines(String(value ?? ""));
+  const tooLongKeyword = keywords.find((keyword) => keyword.length > NOTIFICATION_KEYWORD_MAX_LENGTH);
+  if (tooLongKeyword) {
+    throw new Error(`到账通知关键词不能超过 ${NOTIFICATION_KEYWORD_MAX_LENGTH} 个字符`);
+  }
+  if (keywords.length > NOTIFICATION_KEYWORD_MAX_COUNT) {
+    throw new Error(`到账通知关键词不能超过 ${NOTIFICATION_KEYWORD_MAX_COUNT} 个`);
+  }
 }
 
 function keywordLines(value: string[]) {
@@ -804,10 +824,10 @@ function PaymentAccountModal({ open, onCancel, onRefresh }: Omit<ModalProps, "pa
         <Form.Item name="fallbackPayUrl" label="兜底收款码 URL">
           <Input allowClear placeholder="支持 https://... 或 wxp://..." />
         </Form.Item>
-        <Form.Item name="notificationKeywords" label="通知关键词">
-          <TextArea rows={4} autoSize={{ minRows: 4, maxRows: 8 }} maxLength={600} showCount placeholder={"到账\n收款成功"} />
+        <Form.Item name="notificationKeywords" label="通知关键词" rules={[{ validator: validateNotificationKeywords }]}>
+          <TextArea rows={4} autoSize={{ minRows: 4, maxRows: 8 }} maxLength={NOTIFICATION_KEYWORDS_TEXT_MAX_LENGTH} showCount placeholder={"到账\n收款成功"} />
         </Form.Item>
-        <Text type="secondary">每行一个关键词；留空时该账号不做关键词限制。</Text>
+        <Text type="secondary">每行一个关键词，单个最多 {NOTIFICATION_KEYWORD_MAX_LENGTH} 个字符，最多 {NOTIFICATION_KEYWORD_MAX_COUNT} 个；留空时该账号不做关键词限制。</Text>
       </Form>
     </Modal>
   );
@@ -881,10 +901,10 @@ function PaymentAccountSettingsModal({ account, open, onCancel, onRefresh }: Pay
         <Form.Item name="fallbackPayUrl" label="兜底收款码 URL">
           <Input allowClear placeholder="支持 https://... 或 wxp://..." />
         </Form.Item>
-        <Form.Item name="notificationKeywords" label="通知关键词">
-          <TextArea rows={4} autoSize={{ minRows: 4, maxRows: 8 }} maxLength={600} showCount placeholder={"到账\n收款成功"} />
+        <Form.Item name="notificationKeywords" label="通知关键词" rules={[{ validator: validateNotificationKeywords }]}>
+          <TextArea rows={4} autoSize={{ minRows: 4, maxRows: 8 }} maxLength={NOTIFICATION_KEYWORDS_TEXT_MAX_LENGTH} showCount placeholder={"到账\n收款成功"} />
         </Form.Item>
-        <Text type="secondary">每行一个关键词；留空时该账号不做关键词限制。</Text>
+        <Text type="secondary">每行一个关键词，单个最多 {NOTIFICATION_KEYWORD_MAX_LENGTH} 个字符，最多 {NOTIFICATION_KEYWORD_MAX_COUNT} 个；留空时该账号不做关键词限制。</Text>
       </Form>
     </Modal>
   );

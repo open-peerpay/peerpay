@@ -6,7 +6,7 @@
 github.com/open-peerpay
 ├── peerpay
 ├── peerpay-edge-android
-└── peerpay-store-examples
+└── peerpay-store
 ```
 
 如果 `open-peerpay` 创建时提示已被占用，可以改用 `peerpay-project` 或 `peerpay-dev`，然后把本文档里的 owner 统一替换掉。
@@ -17,7 +17,7 @@ github.com/open-peerpay
 | --- | --- |
 | `peerpay` | 后端服务、管理台、订单创建 API、安卓配对和到账匹配 |
 | `peerpay-edge-android` | 安卓端收款监听、设备配对、签名上报到账通知 |
-| `peerpay-store-examples` | 商品后台示例，模拟商户创建订单、展示付款链接、接收回调并更新订单状态 |
+| `peerpay-store` | 开源一口价商店，内置 SQLite，支持商品上架、匿名下单、PeerPay 付款、卡密自动发货、动态上游取货、自助提货和订单查询 |
 
 ## 组织首页
 
@@ -43,7 +43,7 @@ GitHub 会把这个文件显示在 `https://github.com/open-peerpay` 的组织�
 workspace/
 ├── peerpay/
 ├── peerpay-edge-android/
-└── peerpay-store-examples/
+└── peerpay-store/
 ```
 
 每个仓库独立维护自己的 `.git`、`origin`、分支、tag、issue 和 release。
@@ -72,8 +72,8 @@ git push -u origin main
 ```
 
 ```bash
-cd ../peerpay-store-examples
-git remote add origin git@github.com:open-peerpay/peerpay-store-examples.git
+cd ../peerpay-store
+git remote add origin git@github.com:open-peerpay/peerpay-store.git
 git push -u origin main
 ```
 
@@ -90,13 +90,13 @@ git branch --show-current
 三个仓库的 README 顶部都建议放同一张表：
 
 ```md
-## PeerPay Repositories
+## PeerPay 仓库
 
-| Repository | Description |
+| 仓库 | 说明 |
 | --- | --- |
-| [peerpay](https://github.com/open-peerpay/peerpay) | Backend API and admin console |
-| [peerpay-edge-android](https://github.com/open-peerpay/peerpay-edge-android) | Android edge client for payment notification listening |
-| [peerpay-store-examples](https://github.com/open-peerpay/peerpay-store-examples) | Example merchant backend for integration testing |
+| [peerpay](https://github.com/open-peerpay/peerpay) | PeerPay 后端和管理后台，负责订单创建、收款账号分配、安卓设备配对、到账通知匹配和商户回调 |
+| [peerpay-edge-android](https://github.com/open-peerpay/peerpay-edge-android) | 安卓边缘端，监听支付宝/微信到账通知并签名上报给 PeerPay 后端 |
+| [peerpay-store](https://github.com/open-peerpay/peerpay-store) | 开源一口价商店，支持商品上架、匿名下单、PeerPay 付款、自动发货和自助查询 |
 ```
 
 ## 当前仓库迁移

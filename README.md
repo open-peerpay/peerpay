@@ -8,7 +8,7 @@ PeerPay Backend 是 PeerPay 的后端服务，负责订单创建、金额分配�
 | --- | --- |
 | [peerpay](https://github.com/open-peerpay/peerpay) | 后端服务和管理台，也就是当前仓库 |
 | [peerpay-edge-android](https://github.com/open-peerpay/peerpay-edge-android) | 安卓收款监听端，扫码配对后上报到账通知 |
-| [peerpay-store-examples](https://github.com/open-peerpay/peerpay-store-examples) | 商品后台示例，用于联调创建订单、展示付款 URL、接收回调和更新订单状态 |
+| [peerpay-store](https://github.com/open-peerpay/peerpay-store) | 开源一口价商店，支持商品上架、匿名下单、PeerPay 付款、自动发货和自助查询 |
 
 ## 对接文档
 

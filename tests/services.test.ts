@@ -25,9 +25,9 @@ import {
   type AppContext
 } from "../server/services";
 import type { Device, EnrollDeviceResult, Order, PaymentAccount, PaymentPageData, PresetQrCode } from "../src/shared/types";
-import { NOTIFICATION_KEYWORD_MAX_LENGTH } from "../src/shared/constants";
+import { NOTIFICATION_AMOUNT_MACRO, NOTIFICATION_TEMPLATE_MAX_LENGTH } from "../src/shared/constants";
 import { getAdminPath, getAdminSessionState, isSetupRequired, loginAdmin, setupAdminPassword } from "../server/auth";
-import { parseMoney } from "../server/money";
+import { extractMoneyByTemplate, parseMoney } from "../server/money";
 import { createApiRoutes } from "../server/routes";
 
 let ctx: AppContext;
@@ -470,6 +470,51 @@ test("parses money into integer cents without floating point multiplication", ()
   expect(() => parseMoney(1.005)).toThrow("最多两位小数");
 });
 
+test("extracts notification amount strictly from the configured template macro", () => {
+  const rawText = "已转入余额 收钱1笔得3元红包，去看看>> 你已成功收款0.01元（老顾客消费） 已转入余额 收钱1笔得3元红包，去看看>>";
+
+  expect(extractMoneyByTemplate(rawText, `成功收款${NOTIFICATION_AMOUNT_MACRO}元`)).toBe(1);
+  expect(extractMoneyByTemplate(rawText, `收款${NOTIFICATION_AMOUNT_MACRO}元，去看看`)).toBeNull();
+});
+
+test("does not parse raw notification amount without a configured template", () => {
+  const { device } = enrollTestDevice();
+  createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "0.01",
+    merchantOrderId: "raw-without-template"
+  });
+
+  const result = handleAndroidNotification(ctx, {
+    packageName: "com.eg.android.AlipayGphone",
+    rawText: "支付宝到账 0.01 元"
+  }, device);
+
+  expect(result.matched).toBe(false);
+  expect(result.log.status).toBe("parse_failed");
+});
+
+test("matches android notifications using the configured collection template", () => {
+  const { device } = enrollTestDevice();
+  updatePaymentAccountSettings(ctx, alipayA.id, {
+    notificationKeywords: [`成功收款${NOTIFICATION_AMOUNT_MACRO}元`]
+  });
+  const order = createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "0.01",
+    merchantOrderId: "collection-before-red-packet"
+  });
+
+  const result = handleAndroidNotification(ctx, {
+    packageName: "com.eg.android.AlipayGphone",
+    rawText: "已转入余额 收钱1笔得3元红包，去看看>> 你已成功收款0.01元（老顾客消费） 已转入余额 收钱1笔得3元红包，去看看>>"
+  }, device);
+
+  expect(result.matched).toBe(true);
+  expect(result.order?.id).toBe(order.id);
+  expect(result.log.actualAmount).toBe("0.01");
+});
+
 test("matches android payment notifications by package name across bound accounts", () => {
   const firstEnroll = enrollTestDevice("alipay-a", "android-multi");
   const secondEnrollment = createDeviceEnrollment(ctx, {
@@ -519,15 +564,15 @@ test("matches android payment notifications by package name across bound account
   expect(listAmountOccupations(ctx).items).toHaveLength(0);
 });
 
-test("filters android payment notifications with per-account keywords", () => {
+test("filters android payment notifications with per-account templates", () => {
   const updatedAlipayA = updatePaymentAccountSettings(ctx, alipayA.id, {
-    notificationKeywords: ["支付宝 A 到账"]
+    notificationKeywords: [`支付宝 A 到账 ${NOTIFICATION_AMOUNT_MACRO} 元`]
   });
   const updatedAlipayB = updatePaymentAccountSettings(ctx, alipayB.id, {
-    notificationKeywords: ["支付宝 B 到账"]
+    notificationKeywords: [`支付宝 B 到账 ${NOTIFICATION_AMOUNT_MACRO} 元`]
   });
-  expect(updatedAlipayA?.notificationKeywords).toEqual(["支付宝 A 到账"]);
-  expect(updatedAlipayB?.notificationKeywords).toEqual(["支付宝 B 到账"]);
+  expect(updatedAlipayA?.notificationKeywords).toEqual([`支付宝 A 到账 ${NOTIFICATION_AMOUNT_MACRO} 元`]);
+  expect(updatedAlipayB?.notificationKeywords).toEqual([`支付宝 B 到账 ${NOTIFICATION_AMOUNT_MACRO} 元`]);
 
   const firstEnroll = enrollTestDevice("alipay-a", "android-filter");
   const secondEnrollment = createDeviceEnrollment(ctx, {
@@ -587,20 +632,25 @@ test("filters android payment notifications with per-account keywords", () => {
   expect(matchedFirst.order?.id).toBe(firstOrder.id);
 });
 
-test("allows longer payment notification keywords", () => {
-  const keyword = "到账通知关键词".repeat(Math.ceil(NOTIFICATION_KEYWORD_MAX_LENGTH / 6)).slice(0, NOTIFICATION_KEYWORD_MAX_LENGTH);
+test("allows longer payment notification templates", () => {
+  const prefix = "到账通知模板".repeat(Math.ceil(NOTIFICATION_TEMPLATE_MAX_LENGTH / 6))
+    .slice(0, NOTIFICATION_TEMPLATE_MAX_LENGTH - NOTIFICATION_AMOUNT_MACRO.length);
+  const template = `${prefix}${NOTIFICATION_AMOUNT_MACRO}`;
 
   const updated = updatePaymentAccountSettings(ctx, alipayA.id, {
-    notificationKeywords: [keyword]
+    notificationKeywords: [template]
   });
 
-  expect(updated?.notificationKeywords).toEqual([keyword]);
+  expect(updated?.notificationKeywords).toEqual([template]);
   expect(() => updatePaymentAccountSettings(ctx, alipayA.id, {
-    notificationKeywords: [`${keyword}超`]
-  })).toThrow(`到账通知关键词不能超过 ${NOTIFICATION_KEYWORD_MAX_LENGTH} 个字符`);
+    notificationKeywords: [`${template}超`]
+  })).toThrow(`到账通知模板不能超过 ${NOTIFICATION_TEMPLATE_MAX_LENGTH} 个字符`);
+  expect(() => updatePaymentAccountSettings(ctx, alipayA.id, {
+    notificationKeywords: ["支付宝到账"]
+  })).toThrow(`到账通知模板必须且只能包含一个 ${NOTIFICATION_AMOUNT_MACRO}`);
 });
 
-test("routes same-amount wechat notifications to different accounts by keywords", () => {
+test("routes same-amount wechat notifications to different accounts by templates", () => {
   const wechatB = createPaymentAccount(ctx, {
     code: "wechat-b",
     name: "微信 B",
@@ -608,10 +658,10 @@ test("routes same-amount wechat notifications to different accounts by keywords"
     priority: 20,
     maxOffsetCents: 10,
     fallbackPayUrl: "https://pay.example/wechat-b",
-    notificationKeywords: ["微信支付", "个人收款码"]
+    notificationKeywords: [`微信支付: 个人收款码到账¥${NOTIFICATION_AMOUNT_MACRO}`]
   });
   updatePaymentAccountSettings(ctx, wechatA.id, {
-    notificationKeywords: ["微信收款助手", "店员消息"]
+    notificationKeywords: [`微信收款助手: [店员消息]收款到账${NOTIFICATION_AMOUNT_MACRO}元`]
   });
 
   const firstEnroll = enrollTestDevice("wechat-a", "android-wechat-keywords");

@@ -53,9 +53,9 @@ PeerPay 使用“收款账号池”模型。每个收款账号只属于一种付
 
 付款 URL 优先使用该收款账号对应金额的定额二维码；若该金额没有预设二维码，则使用该收款账号的兜底通用收款码，并要求用户手动输入 `actualAmount`。没有对应定额码且没有兜底码的收款账号会被分配逻辑跳过。
 
-每个收款账号可以配置 `notificationKeywords`。配置后，安卓到账通知原文必须命中该账号任一关键词，才会匹配该账号下的 pending 订单；留空则保持不限制。单个关键词最多 200 个字符，最多 30 个关键词。这样同一台安卓设备可以绑定多个同渠道账号，通过不同到账通知关键词区分实际收款账号，提高同金额并发能力。
+每个收款账号可以配置到账通知模板。模板仍通过 `notificationKeywords` 字段传递，每条模板必须且只能包含一个金额宏 `__AMOUNT__`，例如 `成功收款__AMOUNT__元`。安卓通知未直接传 `actualAmount` 时，服务端只会从命中的模板宏位置提取金额，不再从全文猜测第一个金额。单个模板最多 200 个字符，最多 30 个模板。
 
-例如同一台设备绑定 `wechat-a` 和 `wechat-b` 后，可以给 `wechat-a` 配置 `["微信收款助手", "店员消息"]`，给 `wechat-b` 配置 `["微信支付", "个人收款码"]`。两笔同为 `1.00` 的微信订单会分别匹配：
+例如同一台设备绑定 `wechat-a` 和 `wechat-b` 后，可以给 `wechat-a` 配置 `["微信收款助手: [店员消息]收款到账__AMOUNT__元"]`，给 `wechat-b` 配置 `["微信支付: 个人收款码到账¥__AMOUNT__"]`。两笔同为 `1.00` 的微信订单会分别匹配：
 
 ```text
 android.app.Notification 微信收款助手: [店员消息]收款到账1.00元
@@ -71,7 +71,7 @@ android.app.Notification 微信支付: 个人收款码到账¥1.00
 ```bash
 curl -X POST http://localhost:3000/api/payment-accounts \
   -H 'content-type: application/json' \
-  -d '{"code":"alipay-a","name":"支付宝 A","paymentChannel":"alipay","priority":10,"maxOffsetCents":10,"fallbackPayUrl":"https://pay.example/alipay-a","notificationKeywords":["支付宝 A 到账"]}'
+  -d '{"code":"alipay-a","name":"支付宝 A","paymentChannel":"alipay","priority":10,"maxOffsetCents":10,"fallbackPayUrl":"https://pay.example/alipay-a","notificationKeywords":["支付宝 A 到账 __AMOUNT__ 元"]}'
 ```
 
 创建订单由售货系统调用，不在后台管理台手动创建。调用方只指定付款方式，服务端自动分配具体收款账号：
@@ -135,7 +135,7 @@ curl -X POST http://localhost:3000/api/android/notifications \
   -d '{"packageName":"com.eg.android.alipaygphone","actualAmount":"10.00","rawText":"支付宝到账 10.00 元"}'
 ```
 
-安卓通知也可以直接传 `paymentChannel`/`channel`。若传 `packageName`，服务端会把 `com.eg.android.alipaygphone` 识别为支付宝，把 `com.tencent.mm` 识别为微信。同一台安卓客户端可同时监听多个 App，服务端只会在该设备已绑定的、同付款方式、且通知关键词命中的收款账号范围内按金额匹配 pending 订单。
+安卓通知也可以直接传 `paymentChannel`/`channel`。若传 `packageName`，服务端会把 `com.eg.android.alipaygphone` 识别为支付宝，把 `com.tencent.mm` 识别为微信。同一台安卓客户端可同时监听多个 App，服务端只会在该设备已绑定的、同付款方式、且通知模板命中的收款账号范围内按金额匹配 pending 订单。
 
 安卓心跳：
 

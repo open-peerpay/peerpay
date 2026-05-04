@@ -61,8 +61,9 @@ import type {
 import {
   DEFAULT_MAX_OFFSET_CENTS,
   DEFAULT_PAYMENT_CHANNEL,
-  NOTIFICATION_KEYWORD_MAX_COUNT,
-  NOTIFICATION_KEYWORD_MAX_LENGTH,
+  NOTIFICATION_AMOUNT_MACRO,
+  NOTIFICATION_TEMPLATE_MAX_COUNT,
+  NOTIFICATION_TEMPLATE_MAX_LENGTH,
   PAYMENT_CHANNEL_LABELS,
   PAYMENT_CHANNEL_OPTIONS
 } from "../shared/constants";
@@ -104,8 +105,8 @@ type Columns<T> = NonNullable<TableProps<T>["columns"]>;
 const { Header, Sider, Content } = Layout;
 const { Text, Title } = Typography;
 const { TextArea } = Input;
-const NOTIFICATION_KEYWORDS_TEXT_MAX_LENGTH =
-  NOTIFICATION_KEYWORD_MAX_COUNT * NOTIFICATION_KEYWORD_MAX_LENGTH + NOTIFICATION_KEYWORD_MAX_COUNT - 1;
+const NOTIFICATION_TEMPLATES_TEXT_MAX_LENGTH =
+  NOTIFICATION_TEMPLATE_MAX_COUNT * NOTIFICATION_TEMPLATE_MAX_LENGTH + NOTIFICATION_TEMPLATE_MAX_COUNT - 1;
 
 const emptySnapshot: Snapshot = {
   dashboard: {
@@ -245,38 +246,42 @@ function normalizeQrLines(lines: string) {
     });
 }
 
-function normalizeKeywordLines(value: string) {
-  const keywords: string[] = [];
+function normalizeTemplateLines(value: string) {
+  const templates: string[] = [];
   const seen = new Set<string>();
 
   for (const item of value.split(/[\r\n,，;；]+/)) {
-    const keyword = item.trim();
-    if (!keyword) {
+    const template = item.trim();
+    if (!template) {
       continue;
     }
-    const key = keyword.toLowerCase();
+    const key = template.toLowerCase();
     if (seen.has(key)) {
       continue;
     }
     seen.add(key);
-    keywords.push(keyword);
+    templates.push(template);
   }
 
-  return keywords;
+  return templates;
 }
 
-async function validateNotificationKeywords(_: unknown, value: unknown) {
-  const keywords = normalizeKeywordLines(String(value ?? ""));
-  const tooLongKeyword = keywords.find((keyword) => keyword.length > NOTIFICATION_KEYWORD_MAX_LENGTH);
-  if (tooLongKeyword) {
-    throw new Error(`到账通知关键词不能超过 ${NOTIFICATION_KEYWORD_MAX_LENGTH} 个字符`);
+async function validateNotificationTemplates(_: unknown, value: unknown) {
+  const templates = normalizeTemplateLines(String(value ?? ""));
+  const tooLongTemplate = templates.find((template) => template.length > NOTIFICATION_TEMPLATE_MAX_LENGTH);
+  if (tooLongTemplate) {
+    throw new Error(`到账通知模板不能超过 ${NOTIFICATION_TEMPLATE_MAX_LENGTH} 个字符`);
   }
-  if (keywords.length > NOTIFICATION_KEYWORD_MAX_COUNT) {
-    throw new Error(`到账通知关键词不能超过 ${NOTIFICATION_KEYWORD_MAX_COUNT} 个`);
+  const invalidTemplate = templates.find((template) => template.split(NOTIFICATION_AMOUNT_MACRO).length !== 2);
+  if (invalidTemplate) {
+    throw new Error(`到账通知模板必须且只能包含一个 ${NOTIFICATION_AMOUNT_MACRO}`);
+  }
+  if (templates.length > NOTIFICATION_TEMPLATE_MAX_COUNT) {
+    throw new Error(`到账通知模板不能超过 ${NOTIFICATION_TEMPLATE_MAX_COUNT} 个`);
   }
 }
 
-function keywordLines(value: string[]) {
+function templateLines(value: string[]) {
   return value.join("\n");
 }
 
@@ -813,7 +818,7 @@ function PaymentAccountModal({ open, onCancel, onRefresh }: Omit<ModalProps, "pa
       await createPaymentAccount({
         ...values,
         fallbackPayUrl: values.fallbackPayUrl || null,
-        notificationKeywords: normalizeKeywordLines(values.notificationKeywords ?? "")
+        notificationKeywords: normalizeTemplateLines(values.notificationKeywords ?? "")
       });
       message.success("收款账号已创建");
       form.resetFields();
@@ -847,10 +852,10 @@ function PaymentAccountModal({ open, onCancel, onRefresh }: Omit<ModalProps, "pa
         <Form.Item name="fallbackPayUrl" label="兜底收款码 URL">
           <Input allowClear placeholder="支持 https://... 或 wxp://..." />
         </Form.Item>
-        <Form.Item name="notificationKeywords" label="通知关键词" rules={[{ validator: validateNotificationKeywords }]}>
-          <TextArea rows={4} autoSize={{ minRows: 4, maxRows: 8 }} maxLength={NOTIFICATION_KEYWORDS_TEXT_MAX_LENGTH} showCount placeholder={"到账\n收款成功"} />
+        <Form.Item name="notificationKeywords" label="通知模板" rules={[{ validator: validateNotificationTemplates }]}>
+          <TextArea rows={4} autoSize={{ minRows: 4, maxRows: 8 }} maxLength={NOTIFICATION_TEMPLATES_TEXT_MAX_LENGTH} showCount placeholder={`成功收款${NOTIFICATION_AMOUNT_MACRO}元`} />
         </Form.Item>
-        <Text type="secondary">每行一个关键词，单个最多 {NOTIFICATION_KEYWORD_MAX_LENGTH} 个字符，最多 {NOTIFICATION_KEYWORD_MAX_COUNT} 个；留空时该账号不做关键词限制。</Text>
+        <Text type="secondary">每行一个模板，必须包含一个 {NOTIFICATION_AMOUNT_MACRO}，单个最多 {NOTIFICATION_TEMPLATE_MAX_LENGTH} 个字符，最多 {NOTIFICATION_TEMPLATE_MAX_COUNT} 个；从通知原文命中模板后提取金额。</Text>
       </Form>
     </Modal>
   );
@@ -877,7 +882,7 @@ function PaymentAccountSettingsModal({ account, open, onCancel, onRefresh }: Pay
         priority: account.priority,
         maxOffsetCents: account.maxOffsetCents,
         fallbackPayUrl: account.fallbackPayUrl,
-        notificationKeywords: keywordLines(account.notificationKeywords)
+        notificationKeywords: templateLines(account.notificationKeywords)
       });
     }
   }, [account, form, open]);
@@ -891,7 +896,7 @@ function PaymentAccountSettingsModal({ account, open, onCancel, onRefresh }: Pay
       await updatePaymentAccountSettings(account.id, {
         ...values,
         fallbackPayUrl: values.fallbackPayUrl || null,
-        notificationKeywords: normalizeKeywordLines(values.notificationKeywords ?? "")
+        notificationKeywords: normalizeTemplateLines(values.notificationKeywords ?? "")
       });
       message.success("收款账号配置已更新");
       onCancel();
@@ -924,10 +929,10 @@ function PaymentAccountSettingsModal({ account, open, onCancel, onRefresh }: Pay
         <Form.Item name="fallbackPayUrl" label="兜底收款码 URL">
           <Input allowClear placeholder="支持 https://... 或 wxp://..." />
         </Form.Item>
-        <Form.Item name="notificationKeywords" label="通知关键词" rules={[{ validator: validateNotificationKeywords }]}>
-          <TextArea rows={4} autoSize={{ minRows: 4, maxRows: 8 }} maxLength={NOTIFICATION_KEYWORDS_TEXT_MAX_LENGTH} showCount placeholder={"到账\n收款成功"} />
+        <Form.Item name="notificationKeywords" label="通知模板" rules={[{ validator: validateNotificationTemplates }]}>
+          <TextArea rows={4} autoSize={{ minRows: 4, maxRows: 8 }} maxLength={NOTIFICATION_TEMPLATES_TEXT_MAX_LENGTH} showCount placeholder={`成功收款${NOTIFICATION_AMOUNT_MACRO}元`} />
         </Form.Item>
-        <Text type="secondary">每行一个关键词，单个最多 {NOTIFICATION_KEYWORD_MAX_LENGTH} 个字符，最多 {NOTIFICATION_KEYWORD_MAX_COUNT} 个；留空时该账号不做关键词限制。</Text>
+        <Text type="secondary">每行一个模板，必须包含一个 {NOTIFICATION_AMOUNT_MACRO}，单个最多 {NOTIFICATION_TEMPLATE_MAX_LENGTH} 个字符，最多 {NOTIFICATION_TEMPLATE_MAX_COUNT} 个；从通知原文命中模板后提取金额。</Text>
       </Form>
     </Modal>
   );
@@ -1254,7 +1259,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     { title: "优先级", dataIndex: "priority", width: 90, responsive: ["md"] },
     { title: "最大偏移", dataIndex: "maxOffsetCents", width: 110, responsive: ["md"], render: (value) => `${value} 分` },
     { title: "兜底码", dataIndex: "fallbackPayUrl", width: 100, responsive: ["sm"], render: (value) => value ? <Tag color="success">已配置</Tag> : <Tag>未配置</Tag> },
-    { title: "关键词", dataIndex: "notificationKeywords", width: 100, responsive: ["sm"], render: (value: string[]) => value.length ? <Tag color="processing">{value.length} 个</Tag> : <Tag>不限</Tag> },
+    { title: "模板", dataIndex: "notificationKeywords", width: 100, responsive: ["sm"], render: (value: string[]) => value.length ? <Tag color="processing">{value.length} 个</Tag> : <Tag>未配置</Tag> },
     { title: "状态", dataIndex: "enabled", width: 100, render: (value) => value ? <Tag color="success">启用</Tag> : <Tag color="default">停用</Tag> },
     {
       title: "操作",

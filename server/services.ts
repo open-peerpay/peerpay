@@ -1,8 +1,14 @@
 import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createDatabase } from "./db";
-import { extractMoneyFromText, formatMoney, parseMoney } from "./money";
-import { DEFAULT_MAX_OFFSET_CENTS, DEFAULT_PAYMENT_CHANNEL, NOTIFICATION_KEYWORD_MAX_COUNT, NOTIFICATION_KEYWORD_MAX_LENGTH } from "../src/shared/constants";
+import { extractMoneyByTemplates, formatMoney, parseMoney } from "./money";
+import {
+  DEFAULT_MAX_OFFSET_CENTS,
+  DEFAULT_PAYMENT_CHANNEL,
+  NOTIFICATION_AMOUNT_MACRO,
+  NOTIFICATION_TEMPLATE_MAX_COUNT,
+  NOTIFICATION_TEMPLATE_MAX_LENGTH
+} from "../src/shared/constants";
 import type {
   AndroidNotificationInput,
   AmountOccupation,
@@ -243,7 +249,7 @@ function mapPaymentAccount(row: PaymentAccountRow): PaymentAccount {
     maxOffsetCents: row.max_offset_cents,
     maxOffset: formatMoney(row.max_offset_cents) ?? "0.00",
     fallbackPayUrl: row.fallback_pay_url,
-    notificationKeywords: parseNotificationKeywords(row.notification_keywords),
+    notificationKeywords: parseNotificationTemplates(row.notification_keywords),
     createdAt: row.created_at
   };
 }
@@ -392,13 +398,13 @@ function parseJson(value: string | null): unknown {
   }
 }
 
-function parseNotificationKeywords(value: string | null) {
+function parseNotificationTemplates(value: string | null) {
   if (!value) {
     return [];
   }
 
   try {
-    return normalizeKeywordList(JSON.parse(value), "到账通知关键词");
+    return normalizeNotificationTemplateList(JSON.parse(value));
   } catch {
     return [];
   }
@@ -490,14 +496,8 @@ function inferPaymentChannel(input: AndroidNotificationInput, rawText: string) {
   return DEFAULT_PAYMENT_CHANNEL;
 }
 
-function accountPassesKeywordFilter(account: PaymentAccountRow, rawText: string) {
-  const keywords = parseNotificationKeywords(account.notification_keywords);
-  if (keywords.length === 0) {
-    return true;
-  }
-
-  const text = rawText.toLowerCase();
-  return keywords.some((keyword) => text.includes(keyword.toLowerCase()));
+function notificationTemplates(account: PaymentAccountRow) {
+  return parseNotificationTemplates(account.notification_keywords);
 }
 
 const ALLOWED_PAY_URL_PROTOCOLS = new Set(["http:", "https:", "wxp:"]);
@@ -564,37 +564,40 @@ function setAppSetting(ctx: AppContext, key: string, value: string) {
   `).run(key, value, nowIso());
 }
 
-function normalizeKeywordList(value: unknown, label: string) {
+function normalizeNotificationTemplateList(value: unknown) {
   const items = Array.isArray(value)
     ? value
     : typeof value === "string"
       ? value.split(/[\r\n,，;；]+/)
       : [];
-  const keywords: string[] = [];
+  const templates: string[] = [];
   const seen = new Set<string>();
 
   for (const item of items) {
-    const keyword = String(item ?? "").trim();
-    if (!keyword) {
+    const template = String(item ?? "").trim();
+    if (!template) {
       continue;
     }
-    if (keyword.length > NOTIFICATION_KEYWORD_MAX_LENGTH) {
-      throw apiError(400, `${label}不能超过 ${NOTIFICATION_KEYWORD_MAX_LENGTH} 个字符`);
+    if (template.length > NOTIFICATION_TEMPLATE_MAX_LENGTH) {
+      throw apiError(400, `到账通知模板不能超过 ${NOTIFICATION_TEMPLATE_MAX_LENGTH} 个字符`);
+    }
+    if (template.split(NOTIFICATION_AMOUNT_MACRO).length !== 2) {
+      throw apiError(400, `到账通知模板必须且只能包含一个 ${NOTIFICATION_AMOUNT_MACRO}`);
     }
 
-    const key = keyword.toLowerCase();
+    const key = template.toLowerCase();
     if (seen.has(key)) {
       continue;
     }
     seen.add(key);
-    keywords.push(keyword);
+    templates.push(template);
   }
 
-  if (keywords.length > NOTIFICATION_KEYWORD_MAX_COUNT) {
-    throw apiError(400, `${label}不能超过 ${NOTIFICATION_KEYWORD_MAX_COUNT} 个`);
+  if (templates.length > NOTIFICATION_TEMPLATE_MAX_COUNT) {
+    throw apiError(400, `到账通知模板不能超过 ${NOTIFICATION_TEMPLATE_MAX_COUNT} 个`);
   }
 
-  return keywords;
+  return templates;
 }
 
 function normalizePaymentPageSettingsInput(
@@ -733,7 +736,7 @@ export function createPaymentAccount(ctx: AppContext, input: CreatePaymentAccoun
   const priority = normalizePriority(input.priority ?? 100);
   const maxOffsetCents = normalizeMaxOffset(input.maxOffsetCents ?? DEFAULT_MAX_OFFSET_CENTS);
   const fallbackPayUrl = normalizePayUrl(input.fallbackPayUrl ?? null, true);
-  const notificationKeywords = normalizeKeywordList(input.notificationKeywords, "到账通知关键词");
+  const notificationKeywords = normalizeNotificationTemplateList(input.notificationKeywords);
 
   if (!/^[a-zA-Z0-9_-]{2,32}$/.test(code)) {
     throw apiError(400, "收款账号编码仅支持 2-32 位字母、数字、下划线或短横线");
@@ -785,9 +788,8 @@ export function updatePaymentAccountSettings(ctx: AppContext, id: number, input:
     input.fallbackPayUrl === undefined ? account.fallbackPayUrl : input.fallbackPayUrl,
     true
   );
-  const notificationKeywords = normalizeKeywordList(
-    input.notificationKeywords === undefined ? account.notificationKeywords : input.notificationKeywords,
-    "到账通知关键词"
+  const notificationKeywords = normalizeNotificationTemplateList(
+    input.notificationKeywords === undefined ? account.notificationKeywords : input.notificationKeywords
   );
 
   if (!/^[a-zA-Z0-9_-]{2,32}$/.test(code)) {
@@ -812,7 +814,7 @@ export function updatePaymentAccountSettings(ctx: AppContext, id: number, input:
     priority,
     maxOffsetCents,
     hasFallbackPayUrl: Boolean(fallbackPayUrl),
-    notificationKeywords: notificationKeywords.length
+    notificationTemplates: notificationKeywords.length
   });
   return paymentAccountById(ctx, id);
 }
@@ -1413,13 +1415,33 @@ export function handleAndroidNotification(
   const packageName = packageNameFromNotification(input);
   const paymentChannel = inferPaymentChannel(input, rawText);
   const rawChannel = input.channel?.trim() || null;
-  const amountCents = input.actualAmount != null
+  const explicitAmountCents = input.actualAmount != null
     ? parseMoney(input.actualAmount)
     : input.amount != null
       ? parseMoney(input.amount)
-      : rawText
-        ? extractMoneyFromText(rawText)
-        : null;
+      : null;
+  const boundAccounts = listDevicePaymentAccounts(ctx, deviceId, paymentChannel)
+    .filter((account) => account.enabled === 1);
+  const accountAmountCandidates = boundAccounts.flatMap((account) => {
+    const templates = notificationTemplates(account);
+    if (explicitAmountCents != null) {
+      if (templates.length === 0) {
+        return [{ account, amountCents: explicitAmountCents }];
+      }
+      const templateAmountCents = rawText ? extractMoneyByTemplates(rawText, templates) : null;
+      return templateAmountCents === explicitAmountCents
+        ? [{ account, amountCents: explicitAmountCents }]
+        : [];
+    }
+
+    const templateAmountCents = rawText && templates.length > 0
+      ? extractMoneyByTemplates(rawText, templates)
+      : null;
+    return templateAmountCents != null
+      ? [{ account, amountCents: templateAmountCents }]
+      : [];
+  });
+  const amountCents = explicitAmountCents ?? accountAmountCandidates[0]?.amountCents ?? null;
 
   const now = nowIso();
   if (amountCents == null) {
@@ -1439,23 +1461,18 @@ export function handleAndroidNotification(
     return { matched: false, order: null, log };
   }
 
-  const boundAccounts = listDevicePaymentAccounts(ctx, deviceId, paymentChannel)
-    .filter((account) => account.enabled === 1)
-    .filter((account) => accountPassesKeywordFilter(account, rawText));
   const transaction = ctx.db.transaction((): NotificationMatchResult => {
     let matchedOrder: Order | null = null;
-    if (boundAccounts.length > 0) {
-      const accountIds = boundAccounts.map((account) => account.id);
-      const placeholders = accountIds.map(() => "?").join(", ");
+    for (const candidate of accountAmountCandidates) {
       const orderRow = ctx.db.query(`
-        ${orderSelectSql(`WHERE o.payment_account_id IN (${placeholders})
+        ${orderSelectSql(`WHERE o.payment_account_id = ?
           AND o.payment_channel = ?
           AND o.actual_amount_cents = ?
           AND o.status = 'pending'
           AND o.expire_at > ?`)}
         ORDER BY pa.priority ASC, pa.id ASC, o.created_at ASC
         LIMIT 1
-      `).get(...accountIds, paymentChannel, amountCents, now) as OrderRow | null;
+      `).get(candidate.account.id, paymentChannel, candidate.amountCents, now) as OrderRow | null;
 
       if (orderRow) {
         ctx.db.query(`
@@ -1464,6 +1481,7 @@ export function handleAndroidNotification(
           WHERE id = ?
         `).run(now, now, orderRow.id);
         matchedOrder = getOrder(ctx, orderRow.id);
+        break;
       }
     }
 
@@ -1473,7 +1491,7 @@ export function handleAndroidNotification(
       channel: rawChannel,
       paymentChannel,
       packageName,
-      amountCents,
+      amountCents: matchedOrder?.actualAmountCents ?? amountCents,
       rawText,
       matchedOrderId: matchedOrder?.id ?? null,
       status: matchedOrder ? "matched" : "unmatched",

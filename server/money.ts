@@ -1,5 +1,7 @@
+import { NOTIFICATION_AMOUNT_MACRO } from "../src/shared/constants";
+
 const MONEY_RE = /^\d+(?:\.\d{1,2})?$/;
-const TEXT_AMOUNT_RE = /(?:¥|￥|金额|收款|到账|入账|收入|付款)?\s*(\d+(?:\.\d{1,2})?)\s*(?:元|CNY|RMB)?/gi;
+const MONEY_PATTERN = "\\d+(?:\\.\\d{1,2})?";
 const MAX_SAFE_CENTS = BigInt(Number.MAX_SAFE_INTEGER);
 
 export function parseMoney(value: string | number): number {
@@ -37,14 +39,28 @@ export function formatMoney(cents: number | null | undefined): string | null {
   return `${yuan}.${fraction}`;
 }
 
-export function extractMoneyFromText(text: string): number | null {
-  const matches = Array.from(text.matchAll(TEXT_AMOUNT_RE))
-    .map((match) => match[1])
-    .filter(Boolean);
-
-  if (matches.length === 0) {
+export function extractMoneyByTemplate(text: string, template: string): number | null {
+  const parts = template.split(NOTIFICATION_AMOUNT_MACRO);
+  if (parts.length !== 2) {
     return null;
   }
 
-  return parseMoney(matches[0]);
+  const pattern = `${escapeRegExp(parts[0])}(${MONEY_PATTERN})${escapeRegExp(parts[1])}`;
+  const match = new RegExp(pattern, "i").exec(text);
+  return match?.[1] ? parseMoney(match[1]) : null;
+}
+
+export function extractMoneyByTemplates(text: string, templates: string[]): number | null {
+  for (const template of templates) {
+    const amountCents = extractMoneyByTemplate(text, template);
+    if (amountCents != null) {
+      return amountCents;
+    }
+  }
+
+  return null;
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

@@ -993,7 +993,8 @@ function allocateActualAmount(
       }
 
       const preset = findPresetQrCode(ctx, account.id, candidate);
-      const payUrl = preset?.payUrl ?? account.fallback_pay_url;
+      const checkedPreset = preset?.checked ? preset : null;
+      const payUrl = checkedPreset?.payUrl ?? account.fallback_pay_url;
       if (!payUrl) {
         continue;
       }
@@ -1002,7 +1003,7 @@ function allocateActualAmount(
         account,
         actualAmount: candidate,
         payUrl,
-        payMode: (preset ? "preset" : "fallback") as PayMode
+        payMode: (checkedPreset ? "preset" : "fallback") as PayMode
       };
     }
   }
@@ -1899,7 +1900,7 @@ export function dashboardStats(ctx: AppContext): DashboardStats {
     },
     amountPool: {
       occupied: scalar(ctx, "SELECT COUNT(*) AS value FROM orders WHERE status = 'pending'"),
-      presetQrCodes: scalar(ctx, "SELECT COUNT(*) AS value FROM preset_qr_codes"),
+      presetQrCodes: scalar(ctx, "SELECT COUNT(*) AS value FROM preset_qr_codes WHERE checked = 1"),
       fallbackAccounts: scalar(ctx, "SELECT COUNT(*) AS value FROM payment_accounts WHERE enabled = 1 AND fallback_pay_url IS NOT NULL AND fallback_pay_url != ''")
     },
     callbacks: {

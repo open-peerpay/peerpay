@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import QRCodeImage from "qrcode/lib/browser";
 import {
+  Alert,
   App as AntApp,
   Button,
   ConfigProvider,
@@ -30,6 +31,7 @@ import {
   CheckCircleOutlined,
   ClockCircleOutlined,
   CloudSyncOutlined,
+  CopyOutlined,
   DeleteOutlined,
   MobileOutlined,
   FileSearchOutlined,
@@ -266,6 +268,27 @@ function normalizeTemplateLines(value: string) {
   return templates;
 }
 
+async function copyText(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.setAttribute("readonly", "");
+  input.style.position = "fixed";
+  input.style.top = "-1000px";
+  document.body.appendChild(input);
+  input.select();
+  const copied = document.execCommand("copy");
+  document.body.removeChild(input);
+
+  if (!copied) {
+    throw new Error("copy failed");
+  }
+}
+
 async function validateNotificationTemplates(_: unknown, value: unknown) {
   const templates = normalizeTemplateLines(String(value ?? ""));
   const tooLongTemplate = templates.find((template) => template.length > NOTIFICATION_TEMPLATE_MAX_LENGTH);
@@ -445,7 +468,7 @@ function PaymentQrImage({ value, status, channel }: { value: string; status: Ord
         dark: "#181a17",
         light: "#ffffff"
       }
-    }).then((url) => {
+    }).then((url: string) => {
       if (active) {
         setImageUrl(url);
       }
@@ -724,7 +747,12 @@ function QrCodeModal({ paymentAccounts, open, onCancel, onRefresh }: ModalProps)
         <Form.Item name="paymentAccountCode" label="收款账号" rules={[{ required: true, message: "请选择收款账号" }]}>
           <Select options={paymentAccountOptions} placeholder="选择收款账号" />
         </Form.Item>
-        <Form.Item name="lines" label="二维码" rules={[{ required: true, message: "请输入二维码配置" }]}>
+        <Form.Item
+          name="lines"
+          label="二维码"
+          extra="导入后默认未检查，不会参与订单分配；确认可用后在列表中标记为已检查。"
+          rules={[{ required: true, message: "请输入二维码配置" }]}
+        >
           <TextArea rows={10} placeholder={"10.00 https://pay.example/10.00\n10.01 wxp://xxxxxxxxxxxx"} />
         </Form.Item>
       </Form>
@@ -1033,7 +1061,7 @@ function DashboardView({ snapshot }: { snapshot: Snapshot }) {
         </div>
         <div className={metricClass("amber")}>
           <Statistic title="金额占用" value={stats.amountPool.occupied} prefix={<ClockCircleOutlined />} />
-          <Text type="secondary">定额码 {stats.amountPool.presetQrCodes}</Text>
+          <Text type="secondary">已检查定额码 {stats.amountPool.presetQrCodes}</Text>
         </div>
         <div className={metricClass("red")}>
           <Statistic title="在线设备" value={stats.devices.online} prefix={<BellOutlined />} />
@@ -1132,6 +1160,15 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     }
   }, [message, refresh]);
 
+  const handleCopyPayUrl = useCallback(async (value: string) => {
+    try {
+      await copyText(value);
+      message.success("付款 URL 已复制");
+    } catch {
+      message.error("复制失败，请手动复制");
+    }
+  }, [message]);
+
   const handleMenuClick = useCallback<NonNullable<MenuProps["onClick"]>>(({ key }) => {
     if (!isViewKey(key)) {
       return;
@@ -1215,14 +1252,20 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     {
       title: "付款 URL",
       dataIndex: "payUrl",
+      width: 560,
       ellipsis: true,
       render: (value: string, record) => (
-        <Space size="small">
-          <Text ellipsis className="table-url">{value}</Text>
+        <div className="table-url-cell">
+          <Tooltip title={value}>
+            <Text ellipsis className="table-url">{value}</Text>
+          </Tooltip>
+          <Tooltip title="复制付款 URL">
+            <Button size="small" icon={<CopyOutlined />} onClick={() => void handleCopyPayUrl(value)} />
+          </Tooltip>
           <Tooltip title="查看二维码">
             <Button size="small" icon={<QrcodeOutlined />} onClick={() => setPreviewQrCode(record)} />
           </Tooltip>
-        </Space>
+        </div>
       )
     },
     {
@@ -1250,7 +1293,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
         </Tooltip>
       )
     }
-  ], [handleDeleteQr, handleQrCheckedToggle]);
+  ], [handleCopyPayUrl, handleDeleteQr, handleQrCheckedToggle]);
 
   const paymentAccountColumns = useMemo<Columns<PaymentAccount>>(() => [
     { title: "编码", dataIndex: "code", width: 140 },
@@ -1402,8 +1445,14 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
         <div className="view-stack">
           <PageHeading
             title="定额二维码"
-            description="导入具体账号下的固定金额收款码。创建订单时会优先匹配对应账号和金额。"
+            description="导入具体账号下的固定金额收款码。创建订单时只会使用已检查的定额码。"
             actions={<Button type="primary" icon={<PlusOutlined />} onClick={() => setQrOpen(true)}>导入二维码</Button>}
+          />
+          <Alert
+            showIcon
+            type="warning"
+            title="未检查的定额二维码不会用于接单"
+            description="新导入或付款 URL 变化后的定额码默认是未检查。确认二维码能打开、金额正确后，再切换为已检查。"
           />
           <section className="panel">
             <Table<PresetQrCode> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.qrCodes.items} columns={qrColumns} scroll={{ x: 1100 }} pagination={{ total: snapshot.qrCodes.total, pageSize: snapshot.qrCodes.limit, showSizeChanger: false }} />
@@ -1555,7 +1604,14 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
               <PaymentChannelTag value={previewQrCode.paymentChannel} />
               {previewQrCode.checked ? <Tag color="success">已检查</Tag> : <Tag>未检查</Tag>}
               <Text type="secondary">{previewQrCode.paymentAccountName} · {previewQrCode.paymentAccountCode}</Text>
-              <Text className="break-text">{previewQrCode.payUrl}</Text>
+              <div className="qr-preview-url">
+                <Tooltip title={previewQrCode.payUrl}>
+                  <Text ellipsis className="qr-preview-url-text">{previewQrCode.payUrl}</Text>
+                </Tooltip>
+                <Tooltip title="复制付款 URL">
+                  <Button size="small" icon={<CopyOutlined />} onClick={() => void handleCopyPayUrl(previewQrCode.payUrl)} />
+                </Tooltip>
+              </div>
             </div>
           </div>
         ) : null}

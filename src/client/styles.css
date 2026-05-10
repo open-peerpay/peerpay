@@ -265,8 +265,22 @@ body {
   word-break: break-all;
 }
 
+.table-url-cell {
+  width: min(560px, 46vw);
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .table-url {
-  max-width: min(420px, 38vw);
+  min-width: 0;
+  flex: 1 1 auto;
+  display: block;
+}
+
+.table-url-cell .ant-btn {
+  flex: 0 0 auto;
 }
 
 .mobile-drawer-brand {
@@ -323,6 +337,24 @@ body {
   justify-items: center;
   gap: 8px;
   text-align: center;
+}
+
+.qr-preview-url {
+  width: min(100%, 420px);
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.qr-preview-url-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: block;
+}
+
+.qr-preview-url .ant-btn {
+  flex: 0 0 auto;
 }
 
 .pay-page {
@@ -786,7 +818,11 @@ body {
   }
 
   .table-url {
-    max-width: 220px;
+    max-width: none;
+  }
+
+  .table-url-cell {
+    width: 260px;
   }
 
   .metrics-grid {

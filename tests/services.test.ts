@@ -84,6 +84,14 @@ function enrollTestDevice(paymentAccountCode = "alipay-a", deviceId = "android-m
   });
 }
 
+function checkPresetQrCode(paymentAccountCode: string, amount: string) {
+  const qrCode = listPresetQrCodes(ctx, { paymentAccountCode }).items.find((item) => item.amount === amount);
+  if (!qrCode) {
+    throw new Error(`preset qr code ${paymentAccountCode} ${amount} not found`);
+  }
+  return setPresetQrCodeChecked(ctx, qrCode.id, true);
+}
+
 test("allows order creation when monitoring devices are offline", () => {
   ctx.db.query("UPDATE devices SET last_seen_at = ?").run(new Date(0).toISOString());
 
@@ -183,10 +191,12 @@ test("uses per-account preset qr codes and isolates payment channels", () => {
     paymentAccountCode: "alipay-a",
     items: [{ amount: "12.00", payUrl: "https://pay.example/alipay-a/12.00" }]
   });
+  checkPresetQrCode("alipay-a", "12.00");
   upsertPresetQrCodes(ctx, {
     paymentAccountCode: "wechat-a",
     items: [{ amount: "12.00", payUrl: "https://pay.example/wechat-a/12.00" }]
   });
+  checkPresetQrCode("wechat-a", "12.00");
 
   const alipay = createOrder(ctx, {
     paymentChannel: "alipay",
@@ -209,6 +219,33 @@ test("uses per-account preset qr codes and isolates payment channels", () => {
   expect(wechat.payMode).toBe("preset");
   expect(wechat.payUrl).toBe(paymentPagePath(wechat.id));
   expect(getPublicPaymentPage(ctx, wechat.id).targetPayUrl).toBe("https://pay.example/wechat-a/12.00");
+});
+
+test("does not use unchecked preset qr codes when allocating orders", () => {
+  updatePaymentAccountSettings(ctx, alipayA.id, { fallbackPayUrl: null });
+  updatePaymentAccountSettings(ctx, alipayB.id, { fallbackPayUrl: null });
+  upsertPresetQrCodes(ctx, {
+    paymentAccountCode: "alipay-a",
+    items: [{ amount: "12.25", payUrl: "https://pay.example/alipay-a/12.25" }]
+  });
+
+  expect(() => createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "12.25",
+    merchantOrderId: "unchecked-preset",
+    ttlMinutes: 10
+  })).toThrow("已无可用收款账号");
+
+  checkPresetQrCode("alipay-a", "12.25");
+  const order = createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "12.25",
+    merchantOrderId: "checked-preset",
+    ttlMinutes: 10
+  });
+
+  expect(order.payMode).toBe("preset");
+  expect(getPublicPaymentPage(ctx, order.id).targetPayUrl).toBe("https://pay.example/alipay-a/12.25");
 });
 
 test("tracks preset qr code checked state and resets it when url changes", () => {
@@ -316,6 +353,7 @@ test("accepts wxp pay urls for wechat fallback and preset qr codes", () => {
     paymentAccountCode: "wechat-wxp",
     items: [{ amount: "15.00", payUrl: "wxp://preset-wechat-1500" }]
   });
+  checkPresetQrCode("wechat-wxp", "15.00");
 
   const presetOrder = createOrder(ctx, {
     paymentChannel: "wechat",

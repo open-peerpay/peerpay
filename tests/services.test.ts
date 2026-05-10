@@ -17,6 +17,8 @@ import {
   setPresetQrCodeChecked,
   signAndroidRequest,
   signPayload,
+  touchDevice,
+  unbindDevicePaymentAccount,
   updatePaymentAccountSettings,
   updateOrderStatus,
   updatePaymentPageSettings,
@@ -501,6 +503,36 @@ test("device enrollment api returns a pairing path", async () => {
   expect(payload.data.pairingUrl).toStartWith("/api/android/enroll?token=");
 });
 
+test("device account unbind api removes a binding", async () => {
+  const firstEnroll = enrollTestDevice("alipay-a", "android-api-unbind");
+  const enrollment = createDeviceEnrollment(ctx, {
+    paymentAccountCode: "wechat-a",
+    name: "主收款机",
+    ttlMinutes: 10
+  });
+  const secondEnroll = enrollAndroidDevice(ctx, {
+    enrollmentToken: enrollment.token,
+    deviceId: "android-api-unbind",
+    appVersion: "0.1.0"
+  });
+  expect(firstEnroll.device.deviceId).toBe(secondEnroll.device.deviceId);
+
+  const routes = createApiRoutes(ctx);
+  await setupAdminPassword(ctx, "strong-password");
+  const cookie = await loginAdmin(ctx, "strong-password");
+  const response = await routes["/api/devices/:id/payment-accounts/:paymentAccountId"].DELETE(Object.assign(
+    new Request(`http://peerpay.test/api/devices/${secondEnroll.device.id}/payment-accounts/${alipayA.id}`, {
+      method: "DELETE",
+      headers: { cookie }
+    }),
+    { params: { id: String(secondEnroll.device.id), paymentAccountId: String(alipayA.id) } }
+  ));
+  const payload = await response.json() as { data: Device };
+
+  expect(response.status).toBe(200);
+  expect(payload.data.paymentAccounts.map((item) => item.code)).toEqual(["wechat-a"]);
+});
+
 test("parses money into integer cents without floating point multiplication", () => {
   expect(parseMoney("10.01")).toBe(1001);
   expect(parseMoney(10.01)).toBe(1001);
@@ -600,6 +632,64 @@ test("matches android payment notifications by package name across bound account
   expect(alipayResult.log.paymentAccountCode).toBe("alipay-a");
   expect(alipayResult.log.paymentChannel).toBe("alipay");
   expect(listAmountOccupations(ctx).items).toHaveLength(0);
+});
+
+test("unbinds a payment account from an android device", () => {
+  const firstEnroll = enrollTestDevice("alipay-a", "android-unbind");
+  const secondEnrollment = createDeviceEnrollment(ctx, {
+    paymentAccountCode: "wechat-a",
+    name: "主收款机",
+    ttlMinutes: 10
+  });
+  const secondEnroll = enrollAndroidDevice(ctx, {
+    enrollmentToken: secondEnrollment.token,
+    deviceId: "android-unbind",
+    appVersion: "0.1.0"
+  });
+
+  expect(firstEnroll.device.deviceId).toBe(secondEnroll.device.deviceId);
+  expect(secondEnroll.device.paymentAccounts.map((item) => item.code).sort()).toEqual(["alipay-a", "wechat-a"]);
+
+  const updated = unbindDevicePaymentAccount(ctx, secondEnroll.device.id, alipayA.id);
+  expect(updated.paymentAccounts.map((item) => item.code)).toEqual(["wechat-a"]);
+
+  const heartbeat = touchDevice(ctx, { appVersion: "0.1.0" }, updated);
+  expect(heartbeat.paymentAccounts.map((item) => item.code)).toEqual(["wechat-a"]);
+
+  createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "31.00",
+    merchantOrderId: "unbound-after-admin"
+  });
+  const retainedOrder = createOrder(ctx, {
+    paymentChannel: "wechat",
+    amount: "32.00",
+    merchantOrderId: "retained-after-admin"
+  });
+
+  const unboundResult = handleAndroidNotification(ctx, {
+    packageName: "com.eg.android.AlipayGphone",
+    actualAmount: "31.00",
+    rawText: "支付宝到账 31.00 元"
+  }, updated);
+  expect(unboundResult.matched).toBe(false);
+  expect(unboundResult.log.status).toBe("unmatched");
+
+  const retainedResult = handleAndroidNotification(ctx, {
+    packageName: "com.tencent.mm",
+    actualAmount: "32.00",
+    rawText: "微信收款到账 32.00 元"
+  }, updated);
+  expect(retainedResult.matched).toBe(true);
+  expect(retainedResult.order?.id).toBe(retainedOrder.id);
+  expect(retainedResult.log.paymentAccountCode).toBe("wechat-a");
+});
+
+test("rejects missing android device account unbind targets", () => {
+  const { device } = enrollTestDevice("alipay-a", "android-unbind-missing");
+
+  expect(() => unbindDevicePaymentAccount(ctx, 999_999, alipayA.id)).toThrow("设备不存在");
+  expect(() => unbindDevicePaymentAccount(ctx, device.id, wechatA.id)).toThrow("设备账号绑定不存在");
 });
 
 test("filters android payment notifications with per-account templates", () => {

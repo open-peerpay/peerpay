@@ -23,6 +23,7 @@ import {
   setPaymentAccountEnabled,
   setPresetQrCodeChecked,
   touchDevice,
+  unbindDevicePaymentAccount,
   updateOrderStatus,
   updatePaymentAccountSettings,
   updatePaymentPageSettings,
@@ -239,6 +240,11 @@ export function createApiRoutes(ctx: AppContext) {
           const body = await readJson<{ enabled: unknown }>(req);
           return json(setDeviceEnabled(ctx, Number(req.params.id), boolFromBody(body.enabled)));
         });
+      })
+    },
+    "/api/devices/:id/payment-accounts/:paymentAccountId": {
+      DELETE: (req: RouteRequest<{ id: string; paymentAccountId: string }>) => withErrors(() => {
+        return admin(ctx, req, () => json(unbindDevicePaymentAccount(ctx, Number(req.params.id), Number(req.params.paymentAccountId))));
       })
     },
     "/api/logs/notifications": {

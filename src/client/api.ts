@@ -133,6 +133,10 @@ export function setDeviceEnabled(id: number, enabled: boolean) {
   return request<Device>(`/api/devices/${id}/enabled`, { method: "POST", body: JSON.stringify({ enabled }) });
 }
 
+export function unbindDevicePaymentAccount(deviceId: number, paymentAccountId: number) {
+  return request<Device>(`/api/devices/${deviceId}/payment-accounts/${paymentAccountId}`, { method: "DELETE" });
+}
+
 export function updateOrderStatus(id: string, status: OrderStatus) {
   return request<Order>(`/api/orders/${id}/status`, { method: "POST", body: JSON.stringify({ status }) });
 }

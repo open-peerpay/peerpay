@@ -12,6 +12,7 @@ import {
   Layout,
   Menu,
   Modal,
+  Popconfirm,
   QRCode as AntQRCode,
   Select,
   Space,
@@ -83,6 +84,7 @@ import {
   setPaymentAccountEnabled,
   setQrCodeChecked,
   setupAdmin,
+  unbindDevicePaymentAccount,
   updateOrderStatus,
   updatePaymentAccountSettings,
   updatePaymentPageSettings,
@@ -1207,6 +1209,16 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     }
   }, [message, refresh]);
 
+  const handleDevicePaymentAccountUnbind = useCallback(async (deviceId: number, paymentAccountId: number) => {
+    try {
+      await unbindDevicePaymentAccount(deviceId, paymentAccountId);
+      message.success("绑定已解除");
+      refresh();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "绑定解除失败");
+    }
+  }, [message, refresh]);
+
   const orderColumns = useMemo<Columns<Order>>(() => [
     { title: "订单号", dataIndex: "id", width: 220, ellipsis: true },
     { title: "商户单号", dataIndex: "merchantOrderId", width: 160, ellipsis: true, responsive: ["md"], render: (value) => value || "-" },
@@ -1327,8 +1339,26 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
       dataIndex: "paymentAccounts",
       width: 240,
       responsive: ["sm"],
-      render: (value: Device["paymentAccounts"]) => value.length
-        ? <Space size={[4, 4]} wrap>{value.map((account) => <Tag key={account.id}>{PAYMENT_CHANNEL_LABELS[account.paymentChannel]} · {account.code}</Tag>)}</Space>
+      render: (value: Device["paymentAccounts"], record) => value.length
+        ? (
+          <Space size={[4, 4]} wrap>
+            {value.map((account) => (
+              <Popconfirm
+                key={account.id}
+                title="解除账号绑定？"
+                description="解除后该设备不再上报该账号到账通知。"
+                okText="解除"
+                okButtonProps={{ danger: true }}
+                cancelText="取消"
+                onConfirm={() => handleDevicePaymentAccountUnbind(record.id, account.id)}
+              >
+                <Tag icon={<DeleteOutlined />} color={account.paymentChannel === "wechat" ? "green" : "blue"} style={{ cursor: "pointer" }}>
+                  {PAYMENT_CHANNEL_LABELS[account.paymentChannel]} · {account.code}
+                </Tag>
+              </Popconfirm>
+            ))}
+          </Space>
+        )
         : "-"
     },
     { title: "在线", dataIndex: "online", width: 90, render: (value) => value ? <Tag color="success">在线</Tag> : <Tag>离线</Tag> },
@@ -1336,7 +1366,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     { title: "配对时间", dataIndex: "pairedAt", width: 190, responsive: ["lg"], render: formatDate },
     { title: "最后心跳", dataIndex: "lastSeenAt", width: 190, responsive: ["lg"], render: formatDate },
     { title: "启用", key: "enabled", width: 90, render: (_, record) => <Switch checked={record.enabled} onChange={(checked) => handleDeviceToggle(record.id, checked)} /> }
-  ], [handleDeviceToggle]);
+  ], [handleDevicePaymentAccountUnbind, handleDeviceToggle]);
 
   const notificationColumns = useMemo<Columns<NotificationLog>>(() => [
     { title: "时间", dataIndex: "receivedAt", width: 190, render: formatDate },

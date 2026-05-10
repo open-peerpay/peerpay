@@ -1321,6 +1321,39 @@ export function setDeviceEnabled(ctx: AppContext, id: number, enabled: boolean) 
   return listDevices(ctx).find((device) => device.id === id) ?? null;
 }
 
+export function unbindDevicePaymentAccount(ctx: AppContext, deviceRowId: number, paymentAccountId: number) {
+  const device = ctx.db.query("SELECT * FROM devices WHERE id = ?").get(deviceRowId) as DeviceRow | null;
+  if (!device) {
+    throw apiError(404, "设备不存在");
+  }
+
+  const binding = ctx.db.query(`
+    SELECT pa.code AS payment_account_code
+    FROM device_payment_accounts dpa
+    JOIN payment_accounts pa ON pa.id = dpa.payment_account_id
+    WHERE dpa.device_id = ? AND dpa.payment_account_id = ?
+  `).get(device.device_id, paymentAccountId) as { payment_account_code: string } | null;
+
+  if (!binding) {
+    throw apiError(404, "设备账号绑定不存在");
+  }
+
+  ctx.db.query("DELETE FROM device_payment_accounts WHERE device_id = ? AND payment_account_id = ?")
+    .run(device.device_id, paymentAccountId);
+  logSystem(ctx, "warn", "devices.payment_account_unbound", "设备收款账号绑定已解除", {
+    deviceRowId,
+    deviceId: device.device_id,
+    paymentAccountId,
+    paymentAccountCode: binding.payment_account_code
+  });
+
+  const updated = ctx.db.query("SELECT * FROM devices WHERE id = ?").get(deviceRowId) as DeviceRow | null;
+  if (!updated) {
+    throw apiError(500, "设备账号绑定解除失败");
+  }
+  return mapDevice(ctx, updated);
+}
+
 export function verifyAndroidRequest(ctx: AppContext, req: Request, bodyText: string) {
   const deviceId = req.headers.get("x-peerpay-device-id")?.trim();
   const timestamp = req.headers.get("x-peerpay-timestamp")?.trim();

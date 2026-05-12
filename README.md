@@ -16,14 +16,22 @@ PeerPay Backend 是 PeerPay 的后端服务，负责订单创建、金额分配�
 
 ## EasyPay 兼容层
 
-PeerPay 原生 `/api/orders` JSON 接口会继续保留。若商户系统已经按易支付协议集成，可额外配置单商户兼容入口：
+PeerPay 已兼容常见易支付（EasyPay/彩虹易支付）对接格式。兼容层只负责协议适配，PeerPay 原生 `/api/orders` JSON 接口会继续保留；底层仍复用 PeerPay 的订单、收款账号池、到账匹配和状态机。
+
+适合这些场景：
+
+- 现有网站、NewAPI、发卡系统或商城已经集成易支付接口。
+- 不想为 PeerPay 单独开发新支付插件。
+- 希望继续使用易支付的 `pid/key/sign`、`notify_url`、`return_url` 对接模型。
+
+启用前配置一个单商户 `pid/key`：
 
 ```bash
 EASYPAY_PID=20220715225121
 EASYPAY_KEY=replace-with-merchant-key
 ```
 
-兼容入口只做协议适配，底层仍复用 PeerPay 的订单、收款账号池、到账匹配和状态机：
+已兼容接口：
 
 | 场景 | 方法 | 地址 |
 | --- | --- | --- |
@@ -31,7 +39,16 @@ EASYPAY_KEY=replace-with-merchant-key
 | API 接口支付 | `POST` | `/mapi.php` |
 | 查询单个订单 | `GET`/`POST` | `/api.php?act=order` |
 
-`type=alipay` 会映射为支付宝，`type=wxpay` 会映射为微信。`mapi.php` 返回 PeerPay 付款页 `payurl`，由 PeerPay 页面展示实际应付金额；支付成功后 EasyPay 通知按 GET 请求发送，商户响应正文包含 `success` 才视为通知成功。
+兼容规则：
+
+- `type=alipay` 映射为支付宝，`type=wxpay` 映射为微信。
+- `out_trade_no` 映射为商户订单号，重复请求会复用同一 PeerPay 订单；若同一 `out_trade_no` 的金额、商品名或支付方式不一致，会返回错误。
+- `mapi.php` 返回 PeerPay 付款页 `payurl`，由 PeerPay 页面展示实际应付金额，避免金额防撞偏移后商户页面展示错误金额。
+- `notify_url` 是服务器异步通知地址，支付成功后 PeerPay 按易支付 GET 参数通知商户；商户响应正文包含 `success` 才视为通知成功。
+- `return_url` 是用户浏览器同步跳转地址，支付成功后会携带 `pid/name/money/out_trade_no/trade_no/param/trade_status/type/sign/sign_type` 参数跳回商户页面。
+- 签名算法为易支付 MD5：去除 `sign`、`sign_type` 和空值，按参数名 ASCII 升序拼接 `a=b&c=d`，末尾拼接 `EASYPAY_KEY` 后取小写 MD5。
+
+暂不兼容 `balance` 和 `refund`，因为 PeerPay 当前没有真实余额账户和上游退款执行能力。
 
 ## 快速开始
 

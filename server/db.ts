@@ -177,6 +177,38 @@ function migrate(db: Database) {
     CREATE INDEX IF NOT EXISTS idx_callbacks_due
       ON callback_logs(status, next_retry_at);
 
+    CREATE TABLE IF NOT EXISTS easypay_order_meta (
+      order_id TEXT PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
+      out_trade_no TEXT NOT NULL UNIQUE,
+      notify_url TEXT NOT NULL,
+      return_url TEXT,
+      param TEXT,
+      money TEXT NOT NULL,
+      pay_type TEXT NOT NULL CHECK (pay_type IN ('alipay', 'wxpay')),
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_easypay_order_meta_out_trade_no
+      ON easypay_order_meta(out_trade_no);
+
+    CREATE TABLE IF NOT EXISTS easypay_notify_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      url TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'success', 'failed')),
+      http_status INTEGER,
+      response_body TEXT,
+      error TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_retry_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_easypay_notify_due
+      ON easypay_notify_logs(status, next_retry_at);
+
     CREATE TABLE IF NOT EXISTS system_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       level TEXT NOT NULL CHECK (level IN ('info', 'warn', 'error')),

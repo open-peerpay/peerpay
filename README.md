@@ -14,6 +14,25 @@ PeerPay Backend 是 PeerPay 的后端服务，负责订单创建、金额分配�
 
 - [Store 支付对接文档](docs/store-payment-integration.md)
 
+## EasyPay 兼容层
+
+PeerPay 原生 `/api/orders` JSON 接口会继续保留。若商户系统已经按易支付协议集成，可额外配置单商户兼容入口：
+
+```bash
+EASYPAY_PID=20220715225121
+EASYPAY_KEY=replace-with-merchant-key
+```
+
+兼容入口只做协议适配，底层仍复用 PeerPay 的订单、收款账号池、到账匹配和状态机：
+
+| 场景 | 方法 | 地址 |
+| --- | --- | --- |
+| 页面跳转支付 | `GET`/`POST` | `/submit.php` |
+| API 接口支付 | `POST` | `/mapi.php` |
+| 查询单个订单 | `GET`/`POST` | `/api.php?act=order` |
+
+`type=alipay` 会映射为支付宝，`type=wxpay` 会映射为微信。`mapi.php` 返回 PeerPay 付款页 `payurl`，由 PeerPay 页面展示实际应付金额；支付成功后 EasyPay 通知按 GET 请求发送，商户响应正文包含 `success` 才视为通知成功。
+
 ## 快速开始
 
 ```bash

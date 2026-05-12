@@ -38,6 +38,7 @@ import {
   requireAdmin,
   setupAdminPassword
 } from "./auth";
+import { createEasyPayRoutes } from "./easypay";
 import { boolFromBody, corsHeaders, json, pageOptions, parseJsonText, readJson, withErrors } from "./http";
 import type {
   AndroidNotificationInput,
@@ -78,6 +79,7 @@ function publicOrder(req: Request, order: Order) {
 
 export function createApiRoutes(ctx: AppContext) {
   return {
+    ...createEasyPayRoutes(ctx),
     "/api/health": {
       GET: () => json({ ok: true, time: new Date().toISOString() })
     },

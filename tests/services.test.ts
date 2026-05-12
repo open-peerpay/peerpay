@@ -6,6 +6,7 @@ import {
   createOrder,
   createPaymentAccount,
   enrollAndroidDevice,
+  getOrder,
   getPaymentPageSettings,
   getPublicPaymentPage,
   handleAndroidNotification,
@@ -31,6 +32,7 @@ import { NOTIFICATION_AMOUNT_MACRO, NOTIFICATION_TEMPLATE_MAX_LENGTH } from "../
 import { getAdminPath, getAdminSessionState, isSetupRequired, loginAdmin, setupAdminPassword } from "../server/auth";
 import { extractMoneyByTemplate, parseMoney } from "../server/money";
 import { createApiRoutes } from "../server/routes";
+import { dispatchEasyPayNotification, signEasyPayParams } from "../server/easypay";
 
 let ctx: AppContext;
 let alipayA: PaymentAccount;
@@ -38,6 +40,8 @@ let alipayB: PaymentAccount;
 let wechatA: PaymentAccount;
 
 beforeEach(() => {
+  Bun.env.EASYPAY_PID = "20220715225121";
+  Bun.env.EASYPAY_KEY = "test-easypay-key";
   ctx = createAppContext({ databaseUrl: ":memory:", runCallbacks: false });
   alipayA = createPaymentAccount(ctx, {
     code: "alipay-a",
@@ -92,6 +96,22 @@ function checkPresetQrCode(paymentAccountCode: string, amount: string) {
     throw new Error(`preset qr code ${paymentAccountCode} ${amount} not found`);
   }
   return setPresetQrCodeChecked(ctx, qrCode.id, true);
+}
+
+function signedEasyPayParams(params: Record<string, string>) {
+  const payload = {
+    pid: Bun.env.EASYPAY_PID ?? "",
+    sign_type: "MD5",
+    ...params
+  };
+  return {
+    ...payload,
+    sign: signEasyPayParams(payload, Bun.env.EASYPAY_KEY ?? "")
+  };
+}
+
+function easyPayBody(params: Record<string, string>) {
+  return new URLSearchParams(params).toString();
 }
 
 test("allows order creation when monitoring devices are offline", () => {
@@ -436,6 +456,220 @@ test("order api returns an absolute payment page url", async () => {
   expect(publicPayload.data.orderId).toBe(payload.data.id);
   expect(publicPayload.data.targetPayUrl).toBe("https://pay.example/alipay-a");
   expect(publicPayload.data.redirectUrl).toBe("https://merchant.example/orders/api-pay-page");
+});
+
+test("generates EasyPay MD5 signatures from canonical non-empty params", () => {
+  const params = {
+    pid: "20220715225121",
+    name: "iPhone17苹果手机",
+    money: "5.67",
+    type: "alipay",
+    out_trade_no: "epay-signature",
+    notify_url: "https://merchant.example/notify",
+    return_url: "https://merchant.example/return",
+    empty: "",
+    sign: "ignored",
+    sign_type: "MD5"
+  };
+
+  expect(signEasyPayParams(params, "merchant-key")).toBe(signEasyPayParams({
+    sign_type: "RSA",
+    return_url: "https://merchant.example/return",
+    notify_url: "https://merchant.example/notify",
+    out_trade_no: "epay-signature",
+    type: "alipay",
+    money: "5.67",
+    name: "iPhone17苹果手机",
+    pid: "20220715225121",
+    sign: "different",
+    empty: ""
+  }, "merchant-key"));
+});
+
+test("EasyPay mapi creates and reuses PeerPay orders without using native JSON callbacks", async () => {
+  const routes = createApiRoutes(ctx);
+  const params = signedEasyPayParams({
+    type: "wxpay",
+    out_trade_no: "epay-mapi-10001",
+    notify_url: "https://merchant.example/notify",
+    name: "会员月卡",
+    money: "18"
+  });
+  const request = new Request("https://peerpay.test/mapi.php", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: easyPayBody(params)
+  });
+
+  const response = await routes["/mapi.php"].POST(request);
+  const payload = await response.json() as { code: number; trade_no: string; O_id: string; payurl: string };
+  const order = getOrder(ctx, payload.trade_no);
+
+  expect(payload.code).toBe(1);
+  expect(payload.O_id).toBe(payload.trade_no);
+  expect(payload.payurl).toBe(`https://peerpay.test${paymentPagePath(payload.trade_no)}`);
+  expect(order?.merchantOrderId).toBe("epay-mapi-10001");
+  expect(order?.paymentChannel).toBe("wechat");
+  expect(order?.requestedAmount).toBe("18.00");
+  expect(order?.callbackUrl).toBeNull();
+
+  const reusedResponse = await routes["/mapi.php"].POST(new Request("https://peerpay.test/mapi.php", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: easyPayBody(params)
+  }));
+  const reusedPayload = await reusedResponse.json() as { code: number; trade_no: string };
+  expect(reusedPayload.trade_no).toBe(payload.trade_no);
+
+  const conflictResponse = await routes["/mapi.php"].POST(new Request("https://peerpay.test/mapi.php", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: easyPayBody(signedEasyPayParams({
+      type: "wxpay",
+      out_trade_no: "epay-mapi-10001",
+      notify_url: "https://merchant.example/notify",
+      name: "会员月卡",
+      money: "18.01"
+    }))
+  }));
+  const conflictPayload = await conflictResponse.json() as { code: string; msg: string };
+  expect(conflictPayload.code).toBe("error");
+  expect(conflictPayload.msg).toContain("商户订单号");
+});
+
+test("EasyPay submit redirects to PeerPay cashier and return bridge signs merchant redirect", async () => {
+  const routes = createApiRoutes(ctx);
+  const params = signedEasyPayParams({
+    type: "alipay",
+    out_trade_no: "epay-submit-10001",
+    notify_url: "https://merchant.example/notify",
+    return_url: "https://merchant.example/return",
+    name: "单次服务",
+    money: "19.00",
+    param: "gold"
+  });
+  const response = await routes["/submit.php"].GET(new Request(`https://peerpay.test/submit.php?${easyPayBody(params)}`));
+  const location = response.headers.get("location");
+  if (!location) {
+    throw new Error("missing redirect location");
+  }
+  const orderId = location.split("/pay/")[1];
+  const order = getOrder(ctx, orderId);
+
+  expect(response.status).toBe(302);
+  expect(location).toBe(`https://peerpay.test${paymentPagePath(orderId)}`);
+  expect(order?.redirectUrl).toBe(`https://peerpay.test/api/easypay/return/${orderId}`);
+
+  updateOrderStatus(ctx, orderId, "paid");
+  const returnResponse = await routes["/api/easypay/return/:id"].GET(Object.assign(
+    new Request(order?.redirectUrl ?? ""),
+    { params: { id: orderId } }
+  ));
+  const merchantLocation = returnResponse.headers.get("location");
+  if (!merchantLocation) {
+    throw new Error("missing merchant redirect location");
+  }
+  const merchantUrl = new URL(merchantLocation);
+  const returnParams = Object.fromEntries(merchantUrl.searchParams.entries());
+
+  expect(merchantUrl.origin + merchantUrl.pathname).toBe("https://merchant.example/return");
+  expect(returnParams.trade_status).toBe("TRADE_SUCCESS");
+  expect(returnParams.out_trade_no).toBe("epay-submit-10001");
+  expect(returnParams.param).toBe("gold");
+  expect(returnParams.sign).toBe(signEasyPayParams(returnParams, Bun.env.EASYPAY_KEY ?? ""));
+});
+
+test("EasyPay order query supports out_trade_no and maps paid status", async () => {
+  const routes = createApiRoutes(ctx);
+  const params = signedEasyPayParams({
+    type: "alipay",
+    out_trade_no: "epay-query-10001",
+    notify_url: "https://merchant.example/notify",
+    name: "查询订单",
+    money: "20.00"
+  });
+  const createResponse = await routes["/mapi.php"].POST(new Request("https://peerpay.test/mapi.php", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: easyPayBody(params)
+  }));
+  const createPayload = await createResponse.json() as { trade_no: string };
+  const pendingResponse = await routes["/api.php"].GET(new Request(`https://peerpay.test/api.php?${easyPayBody({
+    act: "order",
+    pid: Bun.env.EASYPAY_PID ?? "",
+    key: Bun.env.EASYPAY_KEY ?? "",
+    out_trade_no: "epay-query-10001"
+  })}`));
+  const pendingPayload = await pendingResponse.json() as { code: number; trade_no: string; status: number; money: string };
+
+  expect(pendingPayload.code).toBe(1);
+  expect(pendingPayload.trade_no).toBe(createPayload.trade_no);
+  expect(pendingPayload.status).toBe(0);
+  expect(pendingPayload.money).toBe("20.00");
+
+  updateOrderStatus(ctx, createPayload.trade_no, "paid");
+  const paidResponse = await routes["/api.php"].GET(new Request(`https://peerpay.test/api.php?${easyPayBody({
+    act: "order",
+    pid: Bun.env.EASYPAY_PID ?? "",
+    key: Bun.env.EASYPAY_KEY ?? "",
+    trade_no: createPayload.trade_no
+  })}`));
+  const paidPayload = await paidResponse.json() as { status: number; out_trade_no: string };
+
+  expect(paidPayload.status).toBe(1);
+  expect(paidPayload.out_trade_no).toBe("epay-query-10001");
+});
+
+test("EasyPay paid notifications use GET success semantics and do not create PeerPay callback logs", async () => {
+  const routes = createApiRoutes(ctx);
+  const params = signedEasyPayParams({
+    type: "alipay",
+    out_trade_no: "epay-notify-10001",
+    notify_url: "https://merchant.example/notify",
+    name: "通知订单",
+    money: "21.00",
+    param: "custom"
+  });
+  const createResponse = await routes["/mapi.php"].POST(new Request("https://peerpay.test/mapi.php", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: easyPayBody(params)
+  }));
+  const createPayload = await createResponse.json() as { trade_no: string };
+  updateOrderStatus(ctx, createPayload.trade_no, "paid");
+
+  const peerPayCallbackCount = (ctx.db.query("SELECT COUNT(*) AS value FROM callback_logs").get() as { value: number }).value;
+  const notifyLog = ctx.db.query("SELECT id FROM easypay_notify_logs WHERE order_id = ?").get(createPayload.trade_no) as { id: number } | null;
+  if (!notifyLog) {
+    throw new Error("missing EasyPay notify log");
+  }
+
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = "";
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    requestedUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    return new Response("success");
+  }) as typeof fetch;
+
+  try {
+    await dispatchEasyPayNotification(ctx, notifyLog.id);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const url = new URL(requestedUrl);
+  const notifyParams = Object.fromEntries(url.searchParams.entries());
+  const updatedOrder = getOrder(ctx, createPayload.trade_no);
+  const updatedNotifyLog = ctx.db.query("SELECT status FROM easypay_notify_logs WHERE id = ?").get(notifyLog.id) as { status: string };
+
+  expect(peerPayCallbackCount).toBe(0);
+  expect(url.origin + url.pathname).toBe("https://merchant.example/notify");
+  expect(notifyParams.trade_status).toBe("TRADE_SUCCESS");
+  expect(notifyParams.out_trade_no).toBe("epay-notify-10001");
+  expect(notifyParams.param).toBe("custom");
+  expect(notifyParams.sign).toBe(signEasyPayParams(notifyParams, Bun.env.EASYPAY_KEY ?? ""));
+  expect(updatedOrder?.status).toBe("notified");
+  expect(updatedNotifyLog.status).toBe("success");
 });
 
 test("preset qr code checked api toggles the flag", async () => {

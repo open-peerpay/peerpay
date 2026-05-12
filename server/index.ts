@@ -1,5 +1,6 @@
 import dashboard from "../public/index.html";
 import { createAppContext, retryDueCallbacks } from "./services";
+import { dispatchDueEasyPayNotifications } from "./easypay";
 import { corsHeaders, json } from "./http";
 import { createApiRoutes } from "./routes";
 import { getAdminPath } from "./auth";
@@ -34,6 +35,7 @@ export function startServer() {
 
   const timer = setInterval(() => {
     void retryDueCallbacks(ctx);
+    void dispatchDueEasyPayNotifications(ctx);
   }, 30_000);
   timer.unref?.();
 

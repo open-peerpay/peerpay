@@ -183,10 +183,13 @@ interface SystemLogRow {
   created_at: string;
 }
 
+export type OrderPaidListener = (ctx: AppContext, order: Order) => void;
+
 export interface AppContext {
   db: Database;
   runCallbacks: boolean;
   callbackMaxAttempts: number;
+  orderPaidListeners: OrderPaidListener[];
 }
 
 export function createAppContext(options: {
@@ -197,7 +200,8 @@ export function createAppContext(options: {
   return {
     db: createDatabase(options.databaseUrl),
     runCallbacks: options.runCallbacks ?? Bun.env.NODE_ENV !== "test",
-    callbackMaxAttempts: options.callbackMaxAttempts ?? MAX_CALLBACK_ATTEMPTS
+    callbackMaxAttempts: options.callbackMaxAttempts ?? MAX_CALLBACK_ATTEMPTS,
+    orderPaidListeners: []
   };
 }
 
@@ -1148,9 +1152,29 @@ export function updateOrderStatus(ctx: AppContext, id: string, status: OrderStat
   }
   logSystem(ctx, "warn", "orders.status_updated", "订单状态已手动更新", { orderId: id, status });
   if (status === "paid") {
-    queueCallback(ctx, updated);
+    notifyOrderPaid(ctx, updated);
   }
   return updated;
+}
+
+export function addOrderPaidListener(ctx: AppContext, listener: OrderPaidListener) {
+  if (!ctx.orderPaidListeners.includes(listener)) {
+    ctx.orderPaidListeners.push(listener);
+  }
+}
+
+function notifyOrderPaid(ctx: AppContext, order: Order) {
+  queueCallback(ctx, order);
+  for (const listener of ctx.orderPaidListeners) {
+    try {
+      listener(ctx, order);
+    } catch (error) {
+      logSystem(ctx, "warn", "orders.paid_listener_error", "订单支付监听器执行失败", {
+        orderId: order.id,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
 }
 
 export function createDeviceEnrollment(ctx: AppContext, input: CreateDeviceEnrollmentInput): DeviceEnrollment {
@@ -1545,7 +1569,7 @@ export function handleAndroidNotification(
       paymentChannel,
       amount: matchedOrder.actualAmount
     });
-    queueCallback(ctx, matchedOrder);
+    notifyOrderPaid(ctx, matchedOrder);
   } else {
     logSystem(ctx, "warn", "notifications.unmatched", "到账通知未匹配订单", {
       deviceId,

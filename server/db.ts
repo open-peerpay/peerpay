@@ -51,6 +51,7 @@ function migrate(db: Database) {
       amount_cents INTEGER NOT NULL,
       pay_url TEXT NOT NULL,
       checked INTEGER NOT NULL DEFAULT 0,
+      remark TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       UNIQUE (payment_account_id, amount_cents)
@@ -120,6 +121,44 @@ function migrate(db: Database) {
 
     CREATE INDEX IF NOT EXISTS idx_device_payment_accounts_account
       ON device_payment_accounts(payment_account_id);
+
+    CREATE TABLE IF NOT EXISTS preset_qr_generation_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      payment_account_id INTEGER NOT NULL REFERENCES payment_accounts(id),
+      status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'canceled')),
+      base_amounts_json TEXT NOT NULL,
+      offset_count INTEGER NOT NULL,
+      total_count INTEGER NOT NULL,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_preset_qr_generation_tasks_status
+      ON preset_qr_generation_tasks(status, created_at);
+
+    CREATE TABLE IF NOT EXISTS preset_qr_generation_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL REFERENCES preset_qr_generation_tasks(id) ON DELETE CASCADE,
+      payment_account_id INTEGER NOT NULL REFERENCES payment_accounts(id),
+      amount_cents INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'assigned', 'succeeded', 'failed')),
+      assigned_device_id TEXT REFERENCES devices(device_id),
+      pay_url TEXT,
+      error TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      assigned_at TEXT,
+      completed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (task_id, amount_cents)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_preset_qr_generation_items_dispatch
+      ON preset_qr_generation_items(status, assigned_device_id, updated_at);
+
+    CREATE INDEX IF NOT EXISTS idx_preset_qr_generation_items_task
+      ON preset_qr_generation_items(task_id, status);
 
     CREATE TABLE IF NOT EXISTS device_enrollments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -229,6 +268,7 @@ function migrate(db: Database) {
   `);
   ensureColumn(db, "payment_accounts", "notification_keywords", "ALTER TABLE payment_accounts ADD COLUMN notification_keywords TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, "preset_qr_codes", "checked", "ALTER TABLE preset_qr_codes ADD COLUMN checked INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "preset_qr_codes", "remark", "ALTER TABLE preset_qr_codes ADD COLUMN remark TEXT");
   ensureColumn(db, "orders", "redirect_url", "ALTER TABLE orders ADD COLUMN redirect_url TEXT");
 }
 

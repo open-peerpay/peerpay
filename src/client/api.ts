@@ -4,6 +4,7 @@ import type {
   CallbackLog,
   CreateDeviceEnrollmentInput,
   CreatePaymentAccountInput,
+  CreatePresetQrGenerationTaskInput,
   DashboardStats,
   Device,
   DeviceEnrollment,
@@ -14,6 +15,7 @@ import type {
   PaymentPageData,
   PaymentPageSettings,
   PaymentAccount,
+  PresetQrGenerationTask,
   PresetQrCode,
   SystemLog,
   UpdatePaymentAccountInput,
@@ -62,17 +64,19 @@ export function loadSnapshot() {
     request<Page<Order>>("/api/orders?limit=80"),
     request<Page<AmountOccupation>>("/api/amount-occupations?limit=160"),
     request<Page<PresetQrCode>>("/api/preset-qrcodes?limit=160"),
+    request<Page<PresetQrGenerationTask>>("/api/preset-qrcode-generation-tasks?limit=20"),
     request<Device[]>("/api/devices"),
     request<Page<NotificationLog>>("/api/logs/notifications?limit=80"),
     request<Page<SystemLog>>("/api/logs/system?limit=80"),
     request<Page<CallbackLog>>("/api/callbacks?limit=80")
-  ]).then(([dashboard, paymentPageSettings, paymentAccounts, orders, occupations, qrCodes, devices, notifications, systemLogs, callbacks]) => ({
+  ]).then(([dashboard, paymentPageSettings, paymentAccounts, orders, occupations, qrCodes, qrGenerationTasks, devices, notifications, systemLogs, callbacks]) => ({
     dashboard,
     paymentPageSettings,
     paymentAccounts,
     orders,
     occupations,
     qrCodes,
+    qrGenerationTasks,
     devices,
     notifications,
     systemLogs,
@@ -104,6 +108,13 @@ export function createDeviceEnrollment(input: CreateDeviceEnrollmentInput) {
 
 export function upsertQrCodes(input: BulkPresetQrCodeInput) {
   return request<{ saved: number }>("/api/preset-qrcodes", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export function createQrGenerationTask(input: CreatePresetQrGenerationTaskInput) {
+  return request<PresetQrGenerationTask>("/api/preset-qrcode-generation-tasks", {
     method: "POST",
     body: JSON.stringify(input)
   });

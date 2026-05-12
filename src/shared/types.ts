@@ -4,6 +4,8 @@ export type MatchStatus = "matched" | "unmatched" | "parse_failed";
 export type CallbackStatus = "pending" | "success" | "failed";
 export type PayMode = "preset" | "fallback";
 export type PaymentChannel = "wechat" | "alipay";
+export type PresetQrGenerationTaskStatus = "pending" | "running" | "completed" | "failed" | "canceled";
+export type PresetQrGenerationItemStatus = "pending" | "assigned" | "succeeded" | "failed";
 
 export interface PaymentAccount {
   id: number;
@@ -29,8 +31,42 @@ export interface PresetQrCode {
   amountCents: number;
   payUrl: string;
   checked: boolean;
+  remark: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface PresetQrGenerationTask {
+  id: number;
+  paymentAccountId: number;
+  paymentAccountCode: string;
+  paymentAccountName: string;
+  paymentChannel: PaymentChannel;
+  status: PresetQrGenerationTaskStatus;
+  baseAmounts: string[];
+  offsetCount: number;
+  totalCount: number;
+  pendingCount: number;
+  assignedCount: number;
+  succeededCount: number;
+  failedCount: number;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PresetQrGenerationAssignment {
+  taskId: number;
+  paymentAccountId: number;
+  paymentAccountCode: string;
+  paymentAccountName: string;
+  paymentChannel: PaymentChannel;
+  items: Array<{
+    itemId: number;
+    amount: string;
+    amountCents: number;
+    attempts: number;
+  }>;
 }
 
 export interface AmountOccupation {
@@ -227,6 +263,10 @@ export interface HeartbeatInput {
   metadata?: unknown;
 }
 
+export type HeartbeatResult = Device & {
+  presetQrGenerationAssignment: PresetQrGenerationAssignment | null;
+};
+
 export interface CreateDeviceEnrollmentInput {
   paymentAccountId?: number;
   paymentAccountCode?: string;
@@ -287,6 +327,7 @@ export interface UpsertPresetQrCodeInput {
   paymentAccountCode?: string;
   amount: string | number;
   payUrl: string;
+  remark?: string | null;
 }
 
 export interface BulkPresetQrCodeInput {
@@ -295,7 +336,24 @@ export interface BulkPresetQrCodeInput {
   items: Array<{
     amount: string | number;
     payUrl: string;
+    remark?: string | null;
   }>;
+}
+
+export interface CreatePresetQrGenerationTaskInput {
+  paymentAccountId?: number;
+  paymentAccountCode?: string;
+  amounts: Array<string | number>;
+  offsetCount?: number;
+  offset?: number;
+}
+
+export interface AndroidPresetQrGenerationResultInput {
+  taskId: number;
+  itemId: number;
+  amount?: string | number;
+  payUrl?: string;
+  error?: string;
 }
 
 export interface Page<T> {

@@ -58,6 +58,7 @@ import type {
   PaymentPageSettings,
   PaymentAccount,
   PaymentChannel,
+  PresetQrGenerationTask,
   PresetQrCode,
   SystemLog
 } from "../shared/types";
@@ -73,6 +74,7 @@ import {
 import {
   createDeviceEnrollment,
   createPaymentAccount,
+  createQrGenerationTask,
   deleteQrCode,
   getAdminSession,
   getPaymentPage,
@@ -124,6 +126,7 @@ const emptySnapshot: Snapshot = {
   orders: { items: [], total: 0, limit: 80, offset: 0 },
   occupations: { items: [], total: 0, limit: 160, offset: 0 },
   qrCodes: { items: [], total: 0, limit: 160, offset: 0 },
+  qrGenerationTasks: { items: [], total: 0, limit: 20, offset: 0 },
   devices: [],
   notifications: { items: [], total: 0, limit: 80, offset: 0 },
   systemLogs: { items: [], total: 0, limit: 80, offset: 0 },
@@ -177,6 +180,9 @@ const viewTitles: Record<ViewKey, string> = {
 
 const statusColor: Record<string, string> = {
   pending: "processing",
+  running: "processing",
+  completed: "success",
+  canceled: "default",
   paid: "success",
   notified: "default",
   expired: "error",
@@ -194,6 +200,9 @@ const statusColor: Record<string, string> = {
 
 const statusText: Record<string, string> = {
   pending: "待支付",
+  running: "执行中",
+  completed: "已完成",
+  canceled: "已取消",
   paid: "已支付",
   notified: "已通知",
   expired: "已过期",
@@ -209,6 +218,14 @@ const statusText: Record<string, string> = {
   info: "信息",
   warn: "警告",
   error: "异常"
+};
+
+const qrTaskStatusText: Record<string, string> = {
+  pending: "待生成",
+  running: "执行中",
+  completed: "已完成",
+  failed: "失败",
+  canceled: "已取消"
 };
 
 const PAYMENT_PAGE_POLL_MS = 3_000;
@@ -248,6 +265,29 @@ function normalizeQrLines(lines: string) {
       const [amount, ...urlParts] = line.split(/\s+/);
       return { amount, payUrl: urlParts.join(" ") };
     });
+}
+
+function normalizeIntegerAmountList(value: string) {
+  const amounts: number[] = [];
+  const seen = new Set<number>();
+  for (const item of value.split(/[\s,，;；]+/)) {
+    const text = item.trim();
+    if (!text) {
+      continue;
+    }
+    if (!/^\d+$/.test(text)) {
+      throw new Error("金额必须是整数元");
+    }
+    const amount = Number(text);
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      throw new Error("金额必须是正整数元");
+    }
+    if (!seen.has(amount)) {
+      seen.add(amount);
+      amounts.push(amount);
+    }
+  }
+  return amounts;
 }
 
 function normalizeTemplateLines(value: string) {
@@ -762,6 +802,68 @@ function QrCodeModal({ paymentAccounts, open, onCancel, onRefresh }: ModalProps)
   );
 }
 
+function QrGenerationTaskModal({ paymentAccounts, open, onCancel, onRefresh }: ModalProps) {
+  const [form] = Form.useForm();
+  const { message } = AntApp.useApp();
+  const [saving, setSaving] = useState(false);
+  const paymentAccountOptions = useMemo(() => paymentAccounts.map((account) => ({
+    label: `${PAYMENT_CHANNEL_LABELS[account.paymentChannel]} · ${account.name} (${account.code})`,
+    value: account.code
+  })), [paymentAccounts]);
+
+  const handleFinish = useCallback(async (values: { paymentAccountCode: string; amounts: string; offsetCount: number }) => {
+    let amounts: number[];
+    try {
+      amounts = normalizeIntegerAmountList(values.amounts);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "金额格式无效");
+      return;
+    }
+    if (amounts.length === 0) {
+      message.error("请输入至少一个金额");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const task = await createQrGenerationTask({
+        paymentAccountCode: values.paymentAccountCode,
+        amounts,
+        offsetCount: values.offsetCount
+      });
+      message.success(`已创建 ${task.totalCount} 个二维码的生成任务`);
+      form.resetFields();
+      onCancel();
+      onRefresh();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "任务创建失败");
+    } finally {
+      setSaving(false);
+    }
+  }, [form, message, onCancel, onRefresh]);
+
+  return (
+    <Modal title="自动生成定额二维码" open={open} confirmLoading={saving} destroyOnHidden okText="创建任务" cancelText="取消" onOk={form.submit} onCancel={onCancel}>
+      <Form form={form} layout="vertical" initialValues={{ offsetCount: 10 }} onFinish={handleFinish}>
+        <Form.Item name="paymentAccountCode" label="收款账号" rules={[{ required: true, message: "请选择收款账号" }]}>
+          <Select options={paymentAccountOptions} placeholder="选择收款账号" />
+        </Form.Item>
+        <Form.Item
+          name="amounts"
+          label="整数金额"
+          rules={[{ required: true, message: "请输入金额" }]}
+          extra="可用换行、空格或逗号分隔，例如 10 20 50。"
+        >
+          <TextArea rows={6} placeholder={"10\n20\n50"} />
+        </Form.Item>
+        <Form.Item name="offsetCount" label="偏移数量（个）" rules={[{ required: true, message: "请输入偏移数量" }]}>
+          <InputNumber min={1} max={100} precision={0} style={{ width: "100%" }} />
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+}
+
 function DeviceEnrollmentModal({ paymentAccounts, open, onCancel, onRefresh }: ModalProps) {
   const [form] = Form.useForm();
   const { message } = AntApp.useApp();
@@ -1103,6 +1205,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
   const [loading, setLoading] = useState(true);
   const [isPending, startTransition] = useTransition();
   const [qrOpen, setQrOpen] = useState(false);
+  const [qrTaskOpen, setQrTaskOpen] = useState(false);
   const [previewQrCode, setPreviewQrCode] = useState<PresetQrCode | null>(null);
   const [deviceEnrollOpen, setDeviceEnrollOpen] = useState(false);
   const [paymentAccountOpen, setPaymentAccountOpen] = useState(false);
@@ -1257,10 +1360,33 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     { title: "过期时间", dataIndex: "expireAt", width: 190, responsive: ["sm"], render: formatDate }
   ], []);
 
+  const qrTaskColumns = useMemo<Columns<PresetQrGenerationTask>>(() => [
+    { title: "任务", dataIndex: "id", width: 90, render: (value) => `#${value}` },
+    { title: "收款账号", dataIndex: "paymentAccountCode", width: 130, responsive: ["sm"], render: (value) => value || "-" },
+    { title: "方式", dataIndex: "paymentChannel", width: 90, responsive: ["sm"], render: (value) => <PaymentChannelTag value={value} /> },
+    { title: "基准金额", dataIndex: "baseAmounts", width: 180, ellipsis: true, render: (value: string[]) => value.join(", ") },
+    { title: "偏移", dataIndex: "offsetCount", width: 80, render: (value) => `${value} 个` },
+    {
+      title: "进度",
+      key: "progress",
+      width: 150,
+      render: (_, record) => `${record.succeededCount}/${record.totalCount} 成功 · ${record.failedCount} 失败`
+    },
+    {
+      title: "状态",
+      dataIndex: "status",
+      width: 100,
+      render: (value: string) => <Tag color={statusColor[value] ?? "default"}>{qrTaskStatusText[value] ?? value}</Tag>
+    },
+    { title: "错误", dataIndex: "lastError", ellipsis: true, responsive: ["lg"], render: (value) => value || "-" },
+    { title: "创建时间", dataIndex: "createdAt", width: 190, responsive: ["md"], render: formatDate }
+  ], []);
+
   const qrColumns = useMemo<Columns<PresetQrCode>>(() => [
     { title: "收款账号", dataIndex: "paymentAccountCode", width: 120, responsive: ["sm"], render: (value) => value || "-" },
     { title: "方式", dataIndex: "paymentChannel", width: 90, responsive: ["sm"], render: (value) => <PaymentChannelTag value={value} /> },
     { title: "金额", dataIndex: "amount", width: 110 },
+    { title: "备注", dataIndex: "remark", width: 110, responsive: ["md"], render: (value) => value || "-" },
     {
       title: "付款 URL",
       dataIndex: "payUrl",
@@ -1476,7 +1602,12 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
           <PageHeading
             title="定额二维码"
             description="导入具体账号下的固定金额收款码。创建订单时只会使用已检查的定额码。"
-            actions={<Button type="primary" icon={<PlusOutlined />} onClick={() => setQrOpen(true)}>导入二维码</Button>}
+            actions={(
+              <Space wrap>
+                <Button icon={<QrcodeOutlined />} onClick={() => setQrTaskOpen(true)}>自动生成</Button>
+                <Button type="primary" icon={<PlusOutlined />} onClick={() => setQrOpen(true)}>导入二维码</Button>
+              </Space>
+            )}
           />
           <Alert
             showIcon
@@ -1485,7 +1616,13 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
             description="新导入或付款 URL 变化后的定额码默认是未检查。确认二维码能打开、金额正确后，再切换为已检查。"
           />
           <section className="panel">
-            <Table<PresetQrCode> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.qrCodes.items} columns={qrColumns} scroll={{ x: 1100 }} pagination={{ total: snapshot.qrCodes.total, pageSize: snapshot.qrCodes.limit, showSizeChanger: false }} />
+            <div className="panel-title">
+              <Title level={4}>自动生成任务</Title>
+            </div>
+            <Table<PresetQrGenerationTask> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.qrGenerationTasks.items} columns={qrTaskColumns} scroll={{ x: 1120 }} pagination={{ total: snapshot.qrGenerationTasks.total, pageSize: snapshot.qrGenerationTasks.limit, showSizeChanger: false }} />
+          </section>
+          <section className="panel">
+            <Table<PresetQrCode> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.qrCodes.items} columns={qrColumns} scroll={{ x: 1210 }} pagination={{ total: snapshot.qrCodes.total, pageSize: snapshot.qrCodes.limit, showSizeChanger: false }} />
           </section>
         </div>
       );
@@ -1569,6 +1706,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     orderColumns,
     paymentAccountColumns,
     qrColumns,
+    qrTaskColumns,
     snapshot,
     systemLogColumns
   ]);
@@ -1621,6 +1759,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
         <Menu mode="inline" selectedKeys={[activeView]} items={menuItems} onClick={handleMenuClick} />
       </Drawer>
       <QrCodeModal paymentAccounts={snapshot.paymentAccounts} open={qrOpen} onCancel={() => setQrOpen(false)} onRefresh={refresh} />
+      <QrGenerationTaskModal paymentAccounts={snapshot.paymentAccounts} open={qrTaskOpen} onCancel={() => setQrTaskOpen(false)} onRefresh={refresh} />
       <DeviceEnrollmentModal paymentAccounts={snapshot.paymentAccounts} open={deviceEnrollOpen} onCancel={() => setDeviceEnrollOpen(false)} onRefresh={refresh} />
       <PaymentAccountModal open={paymentAccountOpen} onCancel={() => setPaymentAccountOpen(false)} onRefresh={refresh} />
       <PaymentAccountSettingsModal account={settingsPaymentAccount} open={Boolean(settingsPaymentAccount)} onCancel={() => setSettingsPaymentAccount(null)} onRefresh={refresh} />
@@ -1633,6 +1772,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
               <Text strong>{previewQrCode.amount}</Text>
               <PaymentChannelTag value={previewQrCode.paymentChannel} />
               {previewQrCode.checked ? <Tag color="success">已检查</Tag> : <Tag>未检查</Tag>}
+              {previewQrCode.remark ? <Tag>{previewQrCode.remark}</Tag> : null}
               <Text type="secondary">{previewQrCode.paymentAccountName} · {previewQrCode.paymentAccountCode}</Text>
               <div className="qr-preview-url">
                 <Tooltip title={previewQrCode.payUrl}>

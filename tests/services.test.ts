@@ -5,13 +5,16 @@ import {
   createDeviceEnrollment,
   createOrder,
   createPaymentAccount,
+  createPresetQrGenerationTask,
   enrollAndroidDevice,
   getOrder,
   getPaymentPageSettings,
   getPublicPaymentPage,
   handleAndroidNotification,
+  handleAndroidPresetQrGenerationResult,
   listAmountOccupations,
   listNotificationLogs,
+  listPresetQrGenerationTasks,
   listPresetQrCodes,
   paymentPagePath,
   setPaymentAccountEnabled,
@@ -292,6 +295,42 @@ test("tracks preset qr code checked state and resets it when url changes", () =>
     items: [{ amount: "12.50", payUrl: "https://pay.example/alipay-a/12.50-updated" }]
   });
   expect(listPresetQrCodes(ctx, { paymentAccountCode: "alipay-a" }).items.find((item) => item.id === checked.id)?.checked).toBe(false);
+});
+
+test("dispatches preset qr generation tasks through heartbeat and stores unchecked auto results", () => {
+  const task = createPresetQrGenerationTask(ctx, {
+    paymentAccountCode: "alipay-a",
+    amounts: [10],
+    offsetCount: 3
+  });
+
+  expect(task.totalCount).toBe(3);
+  expect(task.status).toBe("pending");
+
+  const device = enrollTestDevice("alipay-a", "android-generator-a").device;
+  const heartbeat = touchDevice(ctx, { appVersion: "0.1.0" }, device);
+  expect(heartbeat.presetQrGenerationAssignment?.taskId).toBe(task.id);
+  expect(heartbeat.presetQrGenerationAssignment?.items.map((item) => item.amount)).toEqual(["10.00", "10.01", "10.02"]);
+
+  const firstItem = heartbeat.presetQrGenerationAssignment?.items[0];
+  if (!firstItem) {
+    throw new Error("missing qr generation assignment item");
+  }
+  handleAndroidPresetQrGenerationResult(ctx, {
+    taskId: task.id,
+    itemId: firstItem.itemId,
+    amount: firstItem.amount,
+    payUrl: "https://pay.example/auto/alipay-a/10.00"
+  }, heartbeat);
+
+  const qrCode = listPresetQrCodes(ctx, { paymentAccountCode: "alipay-a" }).items.find((item) => item.amount === "10.00");
+  expect(qrCode?.payUrl).toBe("https://pay.example/auto/alipay-a/10.00");
+  expect(qrCode?.checked).toBe(false);
+  expect(qrCode?.remark).toBe("自动生成");
+
+  const updatedTask = listPresetQrGenerationTasks(ctx).items.find((item) => item.id === task.id);
+  expect(updatedTask?.status).toBe("running");
+  expect(updatedTask?.succeededCount).toBe(1);
 });
 
 test("does not offset cent-level amounts but can use another account", () => {

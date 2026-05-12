@@ -2,6 +2,7 @@ import {
   createDeviceEnrollment,
   createOrder,
   createPaymentAccount,
+  createPresetQrGenerationTask,
   dashboardStats,
   deletePresetQrCode,
   dispatchCallback,
@@ -16,6 +17,7 @@ import {
   listNotificationLogs,
   listOrders,
   listPaymentAccounts,
+  listPresetQrGenerationTasks,
   listPresetQrCodes,
   listSystemLogs,
   paymentPagePath,
@@ -29,6 +31,7 @@ import {
   updatePaymentPageSettings,
   upsertPresetQrCodes,
   verifyAndroidRequest,
+  handleAndroidPresetQrGenerationResult,
   type AppContext
 } from "./services";
 import {
@@ -42,9 +45,11 @@ import { createEasyPayRoutes } from "./easypay";
 import { boolFromBody, corsHeaders, json, pageOptions, parseJsonText, readJson, withErrors } from "./http";
 import type {
   AndroidNotificationInput,
+  AndroidPresetQrGenerationResultInput,
   BulkPresetQrCodeInput,
   CreateDeviceEnrollmentInput,
   CreateOrderInput,
+  CreatePresetQrGenerationTaskInput,
   EnrollDeviceInput,
   HeartbeatInput,
   Order,
@@ -192,6 +197,22 @@ export function createApiRoutes(ctx: AppContext) {
     "/api/preset-qrcodes/:id": {
       DELETE: (req: RouteRequest<{ id: string }>) => withErrors(() => admin(ctx, req, () => json(deletePresetQrCode(ctx, Number(req.params.id)))))
     },
+    "/api/preset-qrcode-generation-tasks": {
+      GET: (req: Request) => withErrors(() => admin(ctx, req, () => {
+        const url = new URL(req.url);
+        return json(listPresetQrGenerationTasks(ctx, {
+          ...pageOptions(url),
+          status: url.searchParams.get("status") ?? undefined,
+          paymentAccountCode: url.searchParams.get("paymentAccountCode") ?? undefined,
+          paymentChannel: url.searchParams.get("paymentChannel") ?? url.searchParams.get("channel") ?? undefined
+        }));
+      })),
+      POST: (req: Request) => withErrors(async () => {
+        return admin(ctx, req, async () => {
+          return json(createPresetQrGenerationTask(ctx, await readJson<CreatePresetQrGenerationTaskInput>(req)), { status: 201 });
+        });
+      })
+    },
     "/api/amount-occupations": {
       GET: (req: Request) => withErrors(() => admin(ctx, req, () => {
         const url = new URL(req.url);
@@ -208,6 +229,17 @@ export function createApiRoutes(ctx: AppContext) {
         const device = verifyAndroidRequest(ctx, req, bodyText);
         const result = handleAndroidNotification(ctx, parseJsonText<AndroidNotificationInput>(bodyText), device);
         return json(result, { status: result.matched ? 200 : 202 });
+      })
+    },
+    "/api/android/preset-qrcode-generation-results": {
+      POST: (req: Request) => withErrors(async () => {
+        const bodyText = await req.text();
+        const device = verifyAndroidRequest(ctx, req, bodyText);
+        return json(handleAndroidPresetQrGenerationResult(
+          ctx,
+          parseJsonText<AndroidPresetQrGenerationResultInput>(bodyText),
+          device
+        ));
       })
     },
     "/api/android/enroll": {

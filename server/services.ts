@@ -11,6 +11,7 @@ import {
 } from "../src/shared/constants";
 import type {
   AndroidNotificationInput,
+  AndroidPresetQrGenerationResultInput,
   AmountOccupation,
   BulkPresetQrCodeInput,
   CallbackLog,
@@ -18,12 +19,14 @@ import type {
   CreateDeviceEnrollmentInput,
   CreateOrderInput,
   CreatePaymentAccountInput,
+  CreatePresetQrGenerationTaskInput,
   DashboardStats,
   Device,
   DeviceEnrollment,
   DevicePaymentAccount,
   EnrollDeviceInput,
   EnrollDeviceResult,
+  HeartbeatResult,
   HeartbeatInput,
   LogLevel,
   MatchStatus,
@@ -36,6 +39,10 @@ import type {
   PayMode,
   PaymentAccount,
   PaymentChannel,
+  PresetQrGenerationAssignment,
+  PresetQrGenerationItemStatus,
+  PresetQrGenerationTask,
+  PresetQrGenerationTaskStatus,
   PresetQrCode,
   SystemLog,
   UpdatePaymentAccountInput,
@@ -45,6 +52,13 @@ import type {
 const DEFAULT_ORDER_TTL_MINUTES = 15;
 const DEVICE_ONLINE_WINDOW_MS = 2 * 60 * 1000;
 const MAX_CALLBACK_ATTEMPTS = 5;
+const AUTO_GENERATED_QR_REMARK = "自动生成";
+const QR_GENERATION_DEFAULT_OFFSET_COUNT = 10;
+const QR_GENERATION_MAX_OFFSET_COUNT = 100;
+const QR_GENERATION_MAX_ITEMS = 5000;
+const QR_GENERATION_ASSIGNMENT_BATCH_SIZE = 10;
+const QR_GENERATION_ASSIGNMENT_TIMEOUT_MS = 10 * 60 * 1000;
+const QR_GENERATION_MAX_ATTEMPTS = 3;
 const PAYMENT_PAGE_SETTINGS_KEY = "payment_page_settings";
 const PAYMENT_CHANNEL_ALIASES: Record<string, PaymentChannel> = {
   alipay: "alipay",
@@ -90,6 +104,42 @@ interface PresetQrCodeRow {
   amount_cents: number;
   pay_url: string;
   checked: RowBool;
+  remark: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface PresetQrGenerationTaskRow {
+  id: number;
+  payment_account_id: number;
+  payment_account_code: string;
+  payment_account_name: string;
+  payment_channel: PaymentChannel;
+  status: PresetQrGenerationTaskStatus;
+  base_amounts_json: string;
+  offset_count: number;
+  total_count: number;
+  pending_count: number;
+  assigned_count: number;
+  succeeded_count: number;
+  failed_count: number;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface PresetQrGenerationItemRow {
+  id: number;
+  task_id: number;
+  payment_account_id: number;
+  amount_cents: number;
+  status: PresetQrGenerationItemStatus;
+  assigned_device_id: string | null;
+  pay_url: string | null;
+  error: string | null;
+  attempts: number;
+  assigned_at: string | null;
+  completed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -269,6 +319,28 @@ function mapPresetQrCode(row: PresetQrCodeRow): PresetQrCode {
     amountCents: row.amount_cents,
     payUrl: row.pay_url,
     checked: row.checked === 1,
+    remark: row.remark,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapPresetQrGenerationTask(row: PresetQrGenerationTaskRow): PresetQrGenerationTask {
+  return {
+    id: row.id,
+    paymentAccountId: row.payment_account_id,
+    paymentAccountCode: row.payment_account_code,
+    paymentAccountName: row.payment_account_name,
+    paymentChannel: row.payment_channel,
+    status: row.status,
+    baseAmounts: parseStringList(row.base_amounts_json),
+    offsetCount: row.offset_count,
+    totalCount: row.total_count,
+    pendingCount: row.pending_count,
+    assignedCount: row.assigned_count,
+    succeededCount: row.succeeded_count,
+    failedCount: row.failed_count,
+    lastError: row.last_error,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -400,6 +472,13 @@ function parseJson(value: string | null): unknown {
   } catch {
     return value;
   }
+}
+
+function parseStringList(value: string | null) {
+  const parsed = parseJson(value);
+  return Array.isArray(parsed)
+    ? parsed.map((item) => String(item ?? "")).filter(Boolean)
+    : [];
 }
 
 function parseNotificationTemplates(value: string | null) {
@@ -834,11 +913,12 @@ export function upsertPresetQrCodes(ctx: AppContext, input: BulkPresetQrCodeInpu
 
   const now = nowIso();
   const upsert = ctx.db.query(`
-    INSERT INTO preset_qr_codes(payment_account_id, amount_cents, pay_url, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO preset_qr_codes(payment_account_id, amount_cents, pay_url, remark, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(payment_account_id, amount_cents) DO UPDATE SET
       pay_url = excluded.pay_url,
       checked = CASE WHEN preset_qr_codes.pay_url = excluded.pay_url THEN preset_qr_codes.checked ELSE 0 END,
+      remark = excluded.remark,
       updated_at = excluded.updated_at
   `);
 
@@ -847,7 +927,8 @@ export function upsertPresetQrCodes(ctx: AppContext, input: BulkPresetQrCodeInpu
     for (const item of input.items) {
       const amountCents = parseMoney(item.amount);
       const payUrl = normalizePayUrl(item.payUrl);
-      upsert.run(account.id, amountCents, payUrl, now, now);
+      const remark = textWithin(item.remark, "备注", 100) || null;
+      upsert.run(account.id, amountCents, payUrl, remark, now, now);
       saved += 1;
     }
   });
@@ -937,6 +1018,460 @@ export function deletePresetQrCode(ctx: AppContext, id: number) {
   });
 
   return mapPresetQrCode(row);
+}
+
+function presetQrGenerationTaskSelectSql(where: string) {
+  return `
+    SELECT
+      t.*,
+      pa.code AS payment_account_code,
+      pa.name AS payment_account_name,
+      pa.payment_channel,
+      COALESCE(SUM(CASE WHEN i.status = 'pending' THEN 1 ELSE 0 END), 0) AS pending_count,
+      COALESCE(SUM(CASE WHEN i.status = 'assigned' THEN 1 ELSE 0 END), 0) AS assigned_count,
+      COALESCE(SUM(CASE WHEN i.status = 'succeeded' THEN 1 ELSE 0 END), 0) AS succeeded_count,
+      COALESCE(SUM(CASE WHEN i.status = 'failed' THEN 1 ELSE 0 END), 0) AS failed_count
+    FROM preset_qr_generation_tasks t
+    JOIN payment_accounts pa ON pa.id = t.payment_account_id
+    LEFT JOIN preset_qr_generation_items i ON i.task_id = t.id
+    ${where}
+    GROUP BY t.id
+  `;
+}
+
+function presetQrGenerationTaskById(ctx: AppContext, id: number) {
+  const row = ctx.db.query(presetQrGenerationTaskSelectSql("WHERE t.id = ?"))
+    .get(id) as PresetQrGenerationTaskRow | null;
+  return row ? mapPresetQrGenerationTask(row) : null;
+}
+
+function normalizeGenerationOffsetCount(value: unknown) {
+  const offsetCount = Number(value ?? QR_GENERATION_DEFAULT_OFFSET_COUNT);
+  if (!Number.isInteger(offsetCount) || offsetCount < 1 || offsetCount > QR_GENERATION_MAX_OFFSET_COUNT) {
+    throw apiError(400, `偏移数量必须是 1 到 ${QR_GENERATION_MAX_OFFSET_COUNT} 之间的整数`);
+  }
+  return offsetCount;
+}
+
+function normalizeGenerationBaseAmounts(values: unknown) {
+  if (!Array.isArray(values) || values.length === 0) {
+    throw apiError(400, "请提供至少一个整数金额");
+  }
+
+  const amounts: number[] = [];
+  const seen = new Set<number>();
+  for (const value of values) {
+    const text = String(value ?? "").trim();
+    if (!/^\d+$/.test(text)) {
+      throw apiError(400, "任务金额必须是整数元");
+    }
+
+    const yuan = Number(text);
+    if (!Number.isSafeInteger(yuan) || yuan <= 0) {
+      throw apiError(400, "任务金额必须是正整数元");
+    }
+
+    const amountCents = yuan * 100;
+    if (!Number.isSafeInteger(amountCents)) {
+      throw apiError(400, "任务金额超出安全整数范围");
+    }
+    if (!seen.has(amountCents)) {
+      seen.add(amountCents);
+      amounts.push(amountCents);
+    }
+  }
+  return amounts;
+}
+
+export function createPresetQrGenerationTask(ctx: AppContext, input: CreatePresetQrGenerationTaskInput) {
+  const account = resolvePaymentAccount(ctx, input, true);
+  const baseAmountCents = normalizeGenerationBaseAmounts(input.amounts);
+  const offsetCount = normalizeGenerationOffsetCount(input.offsetCount ?? input.offset);
+  const itemAmounts = [...new Set(baseAmountCents.flatMap((amount) => {
+    return Array.from({ length: offsetCount }, (_, offset) => amount + offset);
+  }))].sort((left, right) => left - right);
+
+  if (itemAmounts.length > QR_GENERATION_MAX_ITEMS) {
+    throw apiError(400, `单个生成任务不能超过 ${QR_GENERATION_MAX_ITEMS} 个二维码`);
+  }
+
+  const now = nowIso();
+  const baseAmounts = baseAmountCents.map((amount) => formatMoney(amount) ?? "0.00");
+  const transaction = ctx.db.transaction(() => {
+    const result = ctx.db.query(`
+      INSERT INTO preset_qr_generation_tasks(
+        payment_account_id, status, base_amounts_json, offset_count, total_count, created_at, updated_at
+      )
+      VALUES (?, 'pending', ?, ?, ?, ?, ?)
+    `).run(account.id, JSON.stringify(baseAmounts), offsetCount, itemAmounts.length, now, now);
+
+    const taskId = Number(result.lastInsertRowid);
+    const insertItem = ctx.db.query(`
+      INSERT INTO preset_qr_generation_items(
+        task_id, payment_account_id, amount_cents, status, created_at, updated_at
+      )
+      VALUES (?, ?, ?, 'pending', ?, ?)
+    `);
+    for (const amountCents of itemAmounts) {
+      insertItem.run(taskId, account.id, amountCents, now, now);
+    }
+    return taskId;
+  });
+
+  const taskId = transaction();
+  const task = presetQrGenerationTaskById(ctx, taskId);
+  if (!task) {
+    throw apiError(500, "二维码生成任务创建失败");
+  }
+
+  logSystem(ctx, "info", "preset_qr_generation_tasks.created", "定额二维码自动生成任务已创建", {
+    taskId,
+    paymentAccountId: account.id,
+    totalCount: itemAmounts.length,
+    offsetCount
+  });
+  return task;
+}
+
+export function listPresetQrGenerationTasks(
+  ctx: AppContext,
+  options: { paymentAccountId?: number; paymentAccountCode?: string; paymentChannel?: string; status?: string; limit?: number; offset?: number } = {}
+): Page<PresetQrGenerationTask> {
+  const filters: string[] = [];
+  const params: SQLQueryBindings[] = [];
+
+  if (options.paymentAccountId != null) {
+    filters.push("t.payment_account_id = ?");
+    params.push(options.paymentAccountId);
+  }
+  if (options.paymentAccountCode) {
+    filters.push("pa.code = ?");
+    params.push(options.paymentAccountCode);
+  }
+  if (options.paymentChannel) {
+    filters.push("pa.payment_channel = ?");
+    params.push(normalizePaymentChannel(options.paymentChannel));
+  }
+  if (options.status) {
+    filters.push("t.status = ?");
+    params.push(normalizePresetQrGenerationTaskStatus(options.status));
+  }
+
+  const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+  const offset = Math.max(options.offset ?? 0, 0);
+  const rows = ctx.db.query(`
+    ${presetQrGenerationTaskSelectSql(where)}
+    ORDER BY t.created_at DESC, t.id DESC
+    LIMIT ? OFFSET ?
+  `).all(...params, limit, offset) as PresetQrGenerationTaskRow[];
+  const total = scalar(ctx, `
+    SELECT COUNT(*) AS value
+    FROM preset_qr_generation_tasks t
+    JOIN payment_accounts pa ON pa.id = t.payment_account_id
+    ${where}
+  `, ...params);
+
+  return { items: rows.map(mapPresetQrGenerationTask), total, limit, offset };
+}
+
+function normalizePresetQrGenerationTaskStatus(value: string) {
+  const status = value.trim() as PresetQrGenerationTaskStatus;
+  if (!["pending", "running", "completed", "failed", "canceled"].includes(status)) {
+    throw apiError(400, "二维码生成任务状态无效");
+  }
+  return status;
+}
+
+function refreshPresetQrGenerationTaskStatus(ctx: AppContext, taskId: number) {
+  const current = ctx.db.query("SELECT status FROM preset_qr_generation_tasks WHERE id = ?")
+    .get(taskId) as { status: PresetQrGenerationTaskStatus } | null;
+  if (!current) {
+    throw apiError(404, "二维码生成任务不存在");
+  }
+  if (current.status === "canceled") {
+    return presetQrGenerationTaskById(ctx, taskId);
+  }
+
+  const counts = ctx.db.query(`
+    SELECT
+      COUNT(*) AS total_count,
+      COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0) AS pending_count,
+      COALESCE(SUM(CASE WHEN status = 'assigned' THEN 1 ELSE 0 END), 0) AS assigned_count,
+      COALESCE(SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END), 0) AS succeeded_count,
+      COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed_count
+    FROM preset_qr_generation_items
+    WHERE task_id = ?
+  `).get(taskId) as Pick<PresetQrGenerationTaskRow, "total_count" | "pending_count" | "assigned_count" | "succeeded_count" | "failed_count">;
+  const lastFailed = ctx.db.query(`
+    SELECT error
+    FROM preset_qr_generation_items
+    WHERE task_id = ? AND status = 'failed' AND error IS NOT NULL
+    ORDER BY updated_at DESC, id DESC
+    LIMIT 1
+  `).get(taskId) as { error: string | null } | null;
+
+  let nextStatus: PresetQrGenerationTaskStatus = "pending";
+  if (counts.total_count > 0 && counts.succeeded_count === counts.total_count) {
+    nextStatus = "completed";
+  } else if (counts.pending_count + counts.assigned_count === 0 && counts.failed_count > 0) {
+    nextStatus = "failed";
+  } else if (counts.assigned_count > 0 || counts.succeeded_count > 0 || counts.failed_count > 0) {
+    nextStatus = "running";
+  }
+
+  ctx.db.query(`
+    UPDATE preset_qr_generation_tasks
+    SET status = ?, last_error = ?, updated_at = ?
+    WHERE id = ?
+  `).run(nextStatus, lastFailed?.error ?? null, nowIso(), taskId);
+  return presetQrGenerationTaskById(ctx, taskId);
+}
+
+function releaseStalePresetQrGenerationAssignments(ctx: AppContext) {
+  const now = nowIso();
+  const cutoff = new Date(Date.now() - QR_GENERATION_ASSIGNMENT_TIMEOUT_MS).toISOString();
+  const stale = ctx.db.query(`
+    SELECT DISTINCT task_id
+    FROM preset_qr_generation_items
+    WHERE status = 'assigned' AND assigned_at <= ?
+  `).all(cutoff) as Array<{ task_id: number }>;
+  if (stale.length === 0) {
+    return;
+  }
+
+  ctx.db.query(`
+    UPDATE preset_qr_generation_items
+    SET status = 'failed',
+        error = COALESCE(error, '设备执行超时'),
+        assigned_device_id = NULL,
+        assigned_at = NULL,
+        completed_at = ?,
+        updated_at = ?
+    WHERE status = 'assigned' AND assigned_at <= ? AND attempts >= ?
+  `).run(now, now, cutoff, QR_GENERATION_MAX_ATTEMPTS);
+  ctx.db.query(`
+    UPDATE preset_qr_generation_items
+    SET status = 'pending',
+        assigned_device_id = NULL,
+        assigned_at = NULL,
+        updated_at = ?
+    WHERE status = 'assigned' AND assigned_at <= ? AND attempts < ?
+  `).run(now, cutoff, QR_GENERATION_MAX_ATTEMPTS);
+
+  for (const item of stale) {
+    refreshPresetQrGenerationTaskStatus(ctx, item.task_id);
+  }
+}
+
+function presetQrGenerationAssignmentByTask(ctx: AppContext, taskId: number, deviceId: string): PresetQrGenerationAssignment | null {
+  const rows = ctx.db.query(`
+    SELECT
+      t.id AS task_id,
+      t.payment_account_id,
+      pa.code AS payment_account_code,
+      pa.name AS payment_account_name,
+      pa.payment_channel,
+      i.id AS item_id,
+      i.amount_cents,
+      i.attempts
+    FROM preset_qr_generation_tasks t
+    JOIN payment_accounts pa ON pa.id = t.payment_account_id
+    JOIN preset_qr_generation_items i ON i.task_id = t.id
+    WHERE t.id = ? AND i.status = 'assigned' AND i.assigned_device_id = ?
+    ORDER BY i.amount_cents ASC
+    LIMIT ?
+  `).all(taskId, deviceId, QR_GENERATION_ASSIGNMENT_BATCH_SIZE) as Array<{
+    task_id: number;
+    payment_account_id: number;
+    payment_account_code: string;
+    payment_account_name: string;
+    payment_channel: PaymentChannel;
+    item_id: number;
+    amount_cents: number;
+    attempts: number;
+  }>;
+  const first = rows[0];
+  if (!first) {
+    return null;
+  }
+
+  return {
+    taskId: first.task_id,
+    paymentAccountId: first.payment_account_id,
+    paymentAccountCode: first.payment_account_code,
+    paymentAccountName: first.payment_account_name,
+    paymentChannel: first.payment_channel,
+    items: rows.map((row) => ({
+      itemId: row.item_id,
+      amount: formatMoney(row.amount_cents) ?? "0.00",
+      amountCents: row.amount_cents,
+      attempts: row.attempts
+    }))
+  };
+}
+
+function assignPresetQrGenerationItems(ctx: AppContext, deviceId: string): PresetQrGenerationAssignment | null {
+  releaseStalePresetQrGenerationAssignments(ctx);
+
+  const activeAssigned = ctx.db.query(`
+    SELECT task_id AS taskId
+    FROM preset_qr_generation_items
+    WHERE status = 'assigned' AND assigned_device_id = ?
+    ORDER BY assigned_at ASC, id ASC
+    LIMIT 1
+  `).get(deviceId) as { taskId: number } | null;
+  if (activeAssigned) {
+    return presetQrGenerationAssignmentByTask(ctx, activeAssigned.taskId, deviceId);
+  }
+
+  const boundAccounts = listDevicePaymentAccounts(ctx, deviceId)
+    .filter((account) => account.enabled === 1)
+    .map((account) => account.id);
+  if (boundAccounts.length === 0) {
+    return null;
+  }
+
+  const placeholders = boundAccounts.map(() => "?").join(", ");
+  const task = ctx.db.query(`
+    SELECT t.id
+    FROM preset_qr_generation_tasks t
+    JOIN preset_qr_generation_items i ON i.task_id = t.id
+    WHERE t.status IN ('pending', 'running')
+      AND i.status = 'pending'
+      AND i.payment_account_id IN (${placeholders})
+    ORDER BY t.created_at ASC, t.id ASC, i.amount_cents ASC
+    LIMIT 1
+  `).get(...boundAccounts) as { id: number } | null;
+  if (!task) {
+    return null;
+  }
+
+  const rows = ctx.db.query(`
+    SELECT id
+    FROM preset_qr_generation_items
+    WHERE task_id = ? AND status = 'pending'
+    ORDER BY amount_cents ASC
+    LIMIT ?
+  `).all(task.id, QR_GENERATION_ASSIGNMENT_BATCH_SIZE) as Array<{ id: number }>;
+  if (rows.length === 0) {
+    refreshPresetQrGenerationTaskStatus(ctx, task.id);
+    return null;
+  }
+
+  const now = nowIso();
+  const transaction = ctx.db.transaction(() => {
+    const updateItem = ctx.db.query(`
+      UPDATE preset_qr_generation_items
+      SET status = 'assigned',
+          assigned_device_id = ?,
+          attempts = attempts + 1,
+          assigned_at = ?,
+          updated_at = ?
+      WHERE id = ? AND status = 'pending'
+    `);
+    for (const row of rows) {
+      updateItem.run(deviceId, now, now, row.id);
+    }
+    ctx.db.query(`
+      UPDATE preset_qr_generation_tasks
+      SET status = 'running', updated_at = ?
+      WHERE id = ? AND status = 'pending'
+    `).run(now, task.id);
+  });
+  transaction();
+
+  return presetQrGenerationAssignmentByTask(ctx, task.id, deviceId);
+}
+
+function upsertAutoGeneratedPresetQrCode(ctx: AppContext, paymentAccountId: number, amountCents: number, payUrl: string, now: string) {
+  ctx.db.query(`
+    INSERT INTO preset_qr_codes(payment_account_id, amount_cents, pay_url, checked, remark, created_at, updated_at)
+    VALUES (?, ?, ?, 0, ?, ?, ?)
+    ON CONFLICT(payment_account_id, amount_cents) DO UPDATE SET
+      pay_url = excluded.pay_url,
+      checked = 0,
+      remark = excluded.remark,
+      updated_at = excluded.updated_at
+  `).run(paymentAccountId, amountCents, payUrl, AUTO_GENERATED_QR_REMARK, now, now);
+}
+
+export function handleAndroidPresetQrGenerationResult(
+  ctx: AppContext,
+  input: AndroidPresetQrGenerationResultInput,
+  verifiedDevice: Device
+) {
+  const taskId = Number(input.taskId);
+  const itemId = Number(input.itemId);
+  if (!Number.isInteger(taskId) || !Number.isInteger(itemId)) {
+    throw apiError(400, "任务结果缺少有效 taskId 或 itemId");
+  }
+
+  const row = ctx.db.query(`
+    SELECT i.*, t.status AS task_status
+    FROM preset_qr_generation_items i
+    JOIN preset_qr_generation_tasks t ON t.id = i.task_id
+    WHERE i.id = ? AND i.task_id = ?
+  `).get(itemId, taskId) as (PresetQrGenerationItemRow & { task_status: PresetQrGenerationTaskStatus }) | null;
+  if (!row) {
+    throw apiError(404, "二维码生成任务明细不存在");
+  }
+  if (row.task_status === "canceled") {
+    throw apiError(409, "二维码生成任务已取消");
+  }
+  if (row.assigned_device_id !== verifiedDevice.deviceId) {
+    throw apiError(409, "二维码生成任务明细未分配给当前设备");
+  }
+  if (input.amount != null && parseMoney(input.amount) !== row.amount_cents) {
+    throw apiError(400, "上报金额与任务金额不一致");
+  }
+
+  const now = nowIso();
+  const payUrl = normalizePayUrl(input.payUrl, true);
+  if (payUrl) {
+    const transaction = ctx.db.transaction(() => {
+      upsertAutoGeneratedPresetQrCode(ctx, row.payment_account_id, row.amount_cents, payUrl, now);
+      ctx.db.query(`
+        UPDATE preset_qr_generation_items
+        SET status = 'succeeded',
+            pay_url = ?,
+            error = NULL,
+            completed_at = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).run(payUrl, now, now, row.id);
+    });
+    transaction();
+    const task = refreshPresetQrGenerationTaskStatus(ctx, taskId);
+    logSystem(ctx, "info", "preset_qr_generation_items.succeeded", "定额二维码自动生成成功", {
+      taskId,
+      itemId,
+      deviceId: verifiedDevice.deviceId,
+      paymentAccountId: row.payment_account_id,
+      amount: formatMoney(row.amount_cents)
+    });
+    return { task, itemId, saved: true };
+  }
+
+  const error = textWithin(input.error || "Android 未返回付款 URL", "失败原因", 500);
+  ctx.db.query(`
+    UPDATE preset_qr_generation_items
+    SET status = 'failed',
+        error = ?,
+        completed_at = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(error, now, now, row.id);
+  const task = refreshPresetQrGenerationTaskStatus(ctx, taskId);
+  logSystem(ctx, "warn", "preset_qr_generation_items.failed", "定额二维码自动生成失败", {
+    taskId,
+    itemId,
+    deviceId: verifiedDevice.deviceId,
+    paymentAccountId: row.payment_account_id,
+    amount: formatMoney(row.amount_cents),
+    error
+  });
+  return { task, itemId, saved: false };
 }
 
 function enabledPaymentAccountRows(ctx: AppContext, paymentChannel: PaymentChannel) {
@@ -1280,7 +1815,7 @@ export function enrollAndroidDevice(ctx: AppContext, input: EnrollDeviceInput): 
   return { device: mapDevice(ctx, device), deviceSecret };
 }
 
-export function touchDevice(ctx: AppContext, input: HeartbeatInput, verifiedDevice: Device) {
+export function touchDevice(ctx: AppContext, input: HeartbeatInput, verifiedDevice: Device): HeartbeatResult {
   const now = nowIso();
   const metadata = input.metadata == null ? null : JSON.stringify(input.metadata);
 
@@ -1306,7 +1841,10 @@ export function touchDevice(ctx: AppContext, input: HeartbeatInput, verifiedDevi
     throw apiError(500, "设备心跳更新失败");
   }
 
-  return mapDevice(ctx, device);
+  return {
+    ...mapDevice(ctx, device),
+    presetQrGenerationAssignment: assignPresetQrGenerationItems(ctx, verifiedDevice.deviceId)
+  };
 }
 
 function getDeviceByDeviceId(ctx: AppContext, deviceId: string) {

@@ -98,6 +98,49 @@ function enrollTestDevice(paymentAccountCode = "alipay-a", deviceId = "android-m
   });
 }
 
+async function openAndroidTaskStream(device: Device, deviceSecret: string, nonce: string) {
+  const bodyText = JSON.stringify({ appVersion: "0.1.0" });
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const signature = signAndroidRequest({
+    method: "POST",
+    path: "/api/android/task-stream",
+    timestamp,
+    nonce,
+    bodyText,
+    deviceSecret
+  });
+  const routes = createApiRoutes(ctx);
+  const response = await routes["/api/android/task-stream"].POST(new Request("http://peerpay.test/api/android/task-stream", {
+    method: "POST",
+    headers: {
+      "x-peerpay-device-id": device.deviceId,
+      "x-peerpay-timestamp": timestamp,
+      "x-peerpay-nonce": nonce,
+      "x-peerpay-signature": signature
+    },
+    body: bodyText
+  }));
+  expect(response.status).toBe(200);
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("missing stream body");
+  }
+  return reader;
+}
+
+async function readAndroidStreamUntil(reader: ReadableStreamDefaultReader<Uint8Array>, needle: string) {
+  const decoder = new TextDecoder();
+  let text = "";
+  for (let i = 0; i < 3 && !text.includes(needle); i++) {
+    const chunk = await reader.read();
+    if (chunk.done) {
+      break;
+    }
+    text += decoder.decode(chunk.value, { stream: true });
+  }
+  return text;
+}
+
 function checkPresetQrCode(paymentAccountCode: string, amount: string) {
   const qrCode = listPresetQrCodes(ctx, { paymentAccountCode }).items.find((item) => item.amount === amount);
   if (!qrCode) {
@@ -408,44 +451,11 @@ test("android task stream emits heartbeat assignments", async () => {
     offsetCount: 1
   });
   const { device, deviceSecret } = enrollTestDevice("alipay-a", "android-stream");
-  const bodyText = JSON.stringify({ appVersion: "0.1.0" });
-  const timestamp = Math.floor(Date.now() / 1000).toString();
-  const nonce = "stream-nonce-1";
-  const signature = signAndroidRequest({
-    method: "POST",
-    path: "/api/android/task-stream",
-    timestamp,
-    nonce,
-    bodyText,
-    deviceSecret
-  });
-  const routes = createApiRoutes(ctx);
-  const response = await routes["/api/android/task-stream"].POST(new Request("http://peerpay.test/api/android/task-stream", {
-    method: "POST",
-    headers: {
-      "x-peerpay-device-id": device.deviceId,
-      "x-peerpay-timestamp": timestamp,
-      "x-peerpay-nonce": nonce,
-      "x-peerpay-signature": signature
-    },
-    body: bodyText
-  }));
-  expect(response.status).toBe(200);
-
-  const reader = response.body?.getReader();
-  if (!reader) {
-    throw new Error("missing stream body");
-  }
-  const decoder = new TextDecoder();
-  let text = "";
-  for (let i = 0; i < 3 && !text.includes("\"type\":\"heartbeat\""); i++) {
-    const chunk = await reader.read();
-    if (chunk.done) {
-      break;
-    }
-    text += decoder.decode(chunk.value, { stream: true });
-  }
+  const reader = await openAndroidTaskStream(device, deviceSecret, "stream-nonce-1");
+  const text = await readAndroidStreamUntil(reader, "\"type\":\"heartbeat\"");
+  expect(listDevices(ctx).find((item) => item.deviceId === device.deviceId)?.online).toBe(true);
   await reader.cancel();
+  expect(listDevices(ctx).find((item) => item.deviceId === device.deviceId)?.online).toBe(false);
 
   const heartbeat = text
     .split("\n")
@@ -453,6 +463,20 @@ test("android task stream emits heartbeat assignments", async () => {
     .map((line) => JSON.parse(line) as { type: string; presetQrGenerationAssignment?: { taskId: number } })
     .find((event) => event.type === "heartbeat");
   expect(heartbeat?.presetQrGenerationAssignment?.taskId).toBe(task.id);
+});
+
+test("android task stream stays online until the last connection closes", async () => {
+  const { device, deviceSecret } = enrollTestDevice("alipay-a", "android-stream-reconnect");
+  const first = await openAndroidTaskStream(device, deviceSecret, "stream-nonce-reconnect-1");
+  await readAndroidStreamUntil(first, "\"type\":\"heartbeat\"");
+  const second = await openAndroidTaskStream(device, deviceSecret, "stream-nonce-reconnect-2");
+  await readAndroidStreamUntil(second, "\"type\":\"heartbeat\"");
+
+  expect(listDevices(ctx).find((item) => item.deviceId === device.deviceId)?.online).toBe(true);
+  await first.cancel();
+  expect(listDevices(ctx).find((item) => item.deviceId === device.deviceId)?.online).toBe(true);
+  await second.cancel();
+  expect(listDevices(ctx).find((item) => item.deviceId === device.deviceId)?.online).toBe(false);
 });
 
 test("does not offset cent-level amounts but can use another account", () => {
@@ -1378,7 +1402,7 @@ test("verifies signed android requests and rejects replayed nonce", () => {
 
   const verified = verifyAndroidRequest(ctx, request, bodyText) as Device;
   expect(verified.deviceId).toBe(device.deviceId);
-  expect(verified.online).toBe(true);
+  expect(verified.online).toBe(false);
   expect(verified.paymentAccounts.map((item) => item.code)).toEqual(["alipay-a"]);
   expect(verified.lastSeenAt).toBeTruthy();
   expect(() => verifyAndroidRequest(ctx, request, bodyText)).toThrow("nonce");

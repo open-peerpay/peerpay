@@ -51,7 +51,7 @@ import type {
 } from "../src/shared/types";
 
 const DEFAULT_ORDER_TTL_MINUTES = 15;
-const DEVICE_ONLINE_WINDOW_MS = 2 * 60 * 1000;
+const ANDROID_TASK_STREAM_STALE_MS = 2 * 60 * 1000;
 const MAX_CALLBACK_ATTEMPTS = 5;
 const AUTO_GENERATED_QR_REMARK = "自动生成";
 const QR_GENERATION_DEFAULT_OFFSET_COUNT = 10;
@@ -237,6 +237,8 @@ interface SystemLogRow {
 export type OrderPaidListener = (ctx: AppContext, order: Order) => void;
 export type AndroidTaskStreamClient = {
   send: (event: AndroidTaskStreamEvent) => void;
+  close: (reason: string) => void;
+  lastActivityAt: number;
 };
 
 export interface AppContext {
@@ -270,6 +272,7 @@ export function nowIso() {
 }
 
 export function registerAndroidTaskStream(ctx: AppContext, deviceId: string, client: AndroidTaskStreamClient) {
+  cleanupStaleAndroidTaskStreams(ctx);
   let clients = ctx.androidTaskStreams.get(deviceId);
   if (!clients) {
     clients = new Set();
@@ -286,6 +289,46 @@ export function registerAndroidTaskStream(ctx: AppContext, deviceId: string, cli
       ctx.androidTaskStreams.delete(deviceId);
     }
   };
+}
+
+function cleanupStaleAndroidTaskStreams(ctx: AppContext) {
+  const staleBefore = Date.now() - ANDROID_TASK_STREAM_STALE_MS;
+  const staleClients: AndroidTaskStreamClient[] = [];
+  for (const [deviceId, clients] of ctx.androidTaskStreams.entries()) {
+    for (const client of clients) {
+      if (client.lastActivityAt < staleBefore) {
+        clients.delete(client);
+        staleClients.push(client);
+      }
+    }
+    if (clients.size === 0) {
+      ctx.androidTaskStreams.delete(deviceId);
+    }
+  }
+  for (const client of staleClients) {
+    try {
+      client.close("stale");
+    } catch {
+      // The connection is already considered offline; close is best effort cleanup.
+    }
+  }
+}
+
+function isAndroidTaskStreamOnline(ctx: AppContext, deviceId: string) {
+  cleanupStaleAndroidTaskStreams(ctx);
+  return (ctx.androidTaskStreams.get(deviceId)?.size ?? 0) > 0;
+}
+
+function countOnlineAndroidTaskStreamDevices(ctx: AppContext) {
+  cleanupStaleAndroidTaskStreams(ctx);
+  const deviceIds = [...ctx.androidTaskStreams.entries()]
+    .filter(([, clients]) => clients.size > 0)
+    .map(([deviceId]) => deviceId);
+  if (deviceIds.length === 0) {
+    return 0;
+  }
+  const placeholders = deviceIds.map(() => "?").join(", ");
+  return scalar(ctx, `SELECT COUNT(*) AS value FROM devices WHERE enabled = 1 AND device_id IN (${placeholders})`, ...deviceIds);
 }
 
 function emitAndroidTaskStreamEvent(ctx: AppContext, deviceId: string, event: AndroidTaskStreamEvent) {
@@ -442,16 +485,13 @@ function mapDevicePaymentAccount(row: PaymentAccountRow): DevicePaymentAccount {
 }
 
 function mapDevice(ctx: AppContext, row: DeviceRow): Device {
-  const threshold = Date.now() - DEVICE_ONLINE_WINDOW_MS;
-  const lastSeen = row.last_seen_at ? Date.parse(row.last_seen_at) : 0;
-
   return {
     id: row.id,
     deviceId: row.device_id,
     name: row.name,
     paymentAccounts: listDevicePaymentAccounts(ctx, row.device_id).map(mapDevicePaymentAccount),
     enabled: row.enabled === 1,
-    online: row.enabled === 1 && lastSeen >= threshold,
+    online: row.enabled === 1 && isAndroidTaskStreamOnline(ctx, row.device_id),
     pairedAt: row.paired_at,
     lastSeenAt: row.last_seen_at,
     appVersion: row.app_version,
@@ -2701,13 +2741,11 @@ export function dashboardStats(ctx: AppContext): DashboardStats {
   const paidToday = scalar(ctx, "SELECT COUNT(*) AS value FROM orders WHERE paid_at >= ?", today.toISOString());
   const settled = paid + notified + expired;
   const successRate = settled === 0 ? 0 : Math.round(((paid + notified) / settled) * 10000) / 100;
-  const onlineThreshold = new Date(Date.now() - DEVICE_ONLINE_WINDOW_MS).toISOString();
-
   return {
     orders: { total, pending, paid, notified, expired, paidToday, successRate },
     devices: {
       total: scalar(ctx, "SELECT COUNT(*) AS value FROM devices"),
-      online: scalar(ctx, "SELECT COUNT(*) AS value FROM devices WHERE enabled = 1 AND last_seen_at >= ?", onlineThreshold)
+      online: countOnlineAndroidTaskStreamDevices(ctx)
     },
     amountPool: {
       occupied: scalar(ctx, "SELECT COUNT(*) AS value FROM orders WHERE status = 'pending'"),

@@ -37,6 +37,7 @@ import {
   upsertPresetQrCodes,
   verifyAndroidRequest,
   handleAndroidPresetQrGenerationResult,
+  type AndroidTaskStreamClient,
   type AppContext
 } from "./services";
 import {
@@ -118,17 +119,42 @@ function androidTaskStreamResponse(ctx: AppContext, input: HeartbeatInput, verif
   let closed = false;
   let unregister: (() => void) | null = null;
   let pingTimer: ReturnType<typeof setInterval> | null = null;
+  let streamClient: AndroidTaskStreamClient | null = null;
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      const write = (event: AndroidTaskStreamEvent) => {
+      const closeConnection = (closeController: boolean) => {
         if (closed) {
           return;
         }
+        closed = true;
+        if (pingTimer) {
+          clearInterval(pingTimer);
+          pingTimer = null;
+        }
+        unregister?.();
+        unregister = null;
+        if (closeController) {
+          try {
+            controller.close();
+          } catch {
+            // The stream may already be closed by the runtime.
+          }
+        }
+      };
+      const write = (event: AndroidTaskStreamEvent) => {
+        if (closed) {
+          return false;
+        }
         try {
           controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+          if (streamClient) {
+            streamClient.lastActivityAt = Date.now();
+          }
+          return true;
         } catch {
-          closed = true;
+          closeConnection(false);
+          return false;
         }
       };
       const sendHeartbeat = (reason: string) => {
@@ -151,24 +177,24 @@ function androidTaskStreamResponse(ctx: AppContext, input: HeartbeatInput, verif
             taskId: 0,
             reason: "设备连接已失效"
           });
-          if (pingTimer) {
-            clearInterval(pingTimer);
-          }
-          unregister?.();
-          closed = true;
-          controller.close();
+          closeConnection(true);
         }
       };
 
-      unregister = registerAndroidTaskStream(ctx, verifiedDevice.deviceId, {
+      streamClient = {
+        lastActivityAt: Date.now(),
         send(event) {
           if (event.type === "refresh") {
             sendHeartbeat(event.reason);
             return;
           }
           write(event);
+        },
+        close() {
+          closeConnection(true);
         }
-      });
+      };
+      unregister = registerAndroidTaskStream(ctx, verifiedDevice.deviceId, streamClient);
       write({ type: "hello", time: new Date().toISOString() });
       sendHeartbeat("connected");
       pingTimer = setInterval(() => {
@@ -178,11 +204,16 @@ function androidTaskStreamResponse(ctx: AppContext, input: HeartbeatInput, verif
       (pingTimer as unknown as { unref?: () => void }).unref?.();
     },
     cancel() {
+      if (closed) {
+        return;
+      }
       closed = true;
       if (pingTimer) {
         clearInterval(pingTimer);
+        pingTimer = null;
       }
       unregister?.();
+      unregister = null;
     }
   });
 

@@ -5,6 +5,7 @@ import {
   createPresetQrGenerationTask,
   dashboardStats,
   deleteDevice,
+  deletePaymentAccount,
   deletePresetQrCode,
   deletePresetQrGenerationTask,
   dispatchCallback,
@@ -222,6 +223,8 @@ function androidTaskStreamResponse(ctx: AppContext, input: HeartbeatInput, verif
       ...corsHeaders,
       "content-type": "application/x-ndjson; charset=utf-8",
       "cache-control": "no-store, no-transform",
+      "x-accel-buffering": "no",
+      "content-encoding": "identity",
       "x-peerpay-stream-protocol": "android-task-stream-v1"
     }
   });
@@ -263,6 +266,11 @@ export function createApiRoutes(ctx: AppContext) {
     "/api/payment-accounts": {
       GET: (req: Request) => withErrors(() => admin(ctx, req, () => json(listPaymentAccounts(ctx)))),
       POST: (req: Request) => withErrors(async () => admin(ctx, req, async () => json(createPaymentAccount(ctx, await readJson(req)), { status: 201 })))
+    },
+    "/api/payment-accounts/:id": {
+      DELETE: (req: RouteRequest<{ id: string }>) => withErrors(() => {
+        return admin(ctx, req, () => json(deletePaymentAccount(ctx, Number(req.params.id))));
+      })
     },
     "/api/payment-accounts/:id/enabled": {
       POST: (req: RouteRequest<{ id: string }>) => withErrors(async () => {

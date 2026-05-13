@@ -7,6 +7,7 @@ import {
   createPaymentAccount,
   createPresetQrGenerationTask,
   deleteDevice,
+  deletePaymentAccount,
   deletePresetQrGenerationTask,
   enrollAndroidDevice,
   getOrder,
@@ -19,6 +20,7 @@ import {
   listNotificationLogs,
   listPresetQrGenerationTasks,
   listPresetQrCodes,
+  listPaymentAccounts,
   paymentPagePath,
   retryPresetQrGenerationTask,
   setPaymentAccountEnabled,
@@ -444,6 +446,41 @@ test("deleting an android device releases assigned qr generation items", () => {
   expect(reassigned.presetQrGenerationAssignment?.taskId).toBe(task.id);
 });
 
+test("deleting a payment account hides it and cancels active qr generation work", () => {
+  const account = createPaymentAccount(ctx, {
+    code: "alipay-delete",
+    name: "支付宝待删除",
+    paymentChannel: "alipay",
+    priority: 1,
+    maxOffsetCents: 10,
+    fallbackPayUrl: "https://pay.example/alipay-delete"
+  });
+  const order = createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "33.00",
+    merchantOrderId: "delete-account-history",
+    ttlMinutes: 10
+  });
+  expect(order.paymentAccountCode).toBe(account.code);
+
+  const { device } = enrollTestDevice(account.code, "android-delete-account");
+  const task = createPresetQrGenerationTask(ctx, {
+    paymentAccountCode: account.code,
+    amounts: [44],
+    offsetCount: 1
+  });
+  expect(touchDevice(ctx, { appVersion: "0.1.0" }, device).presetQrGenerationAssignment?.taskId).toBe(task.id);
+
+  const deleted = deletePaymentAccount(ctx, account.id);
+  expect(deleted.code).toBe(account.code);
+  expect(listPaymentAccounts(ctx).some((item) => item.id === account.id)).toBe(false);
+  expect(listDevices(ctx).find((item) => item.deviceId === device.deviceId)?.paymentAccounts).toEqual([]);
+  expect(touchDevice(ctx, { appVersion: "0.1.0" }, device).presetQrGenerationAssignment).toBeNull();
+  expect(listPresetQrGenerationTasks(ctx).items.find((item) => item.id === task.id)?.status).toBe("canceled");
+  expect(getOrder(ctx, order.id)?.paymentAccountCode).toBe(account.code);
+  expect(() => updatePaymentAccountSettings(ctx, account.id, { name: "已删除账号" })).toThrow("收款账号不存在");
+});
+
 test("android task stream emits heartbeat assignments", async () => {
   const task = createPresetQrGenerationTask(ctx, {
     paymentAccountCode: "alipay-a",
@@ -462,6 +499,27 @@ test("android task stream emits heartbeat assignments", async () => {
     .filter(Boolean)
     .map((line) => JSON.parse(line) as { type: string; presetQrGenerationAssignment?: { taskId: number } })
     .find((event) => event.type === "heartbeat");
+  expect(heartbeat?.presetQrGenerationAssignment?.taskId).toBe(task.id);
+});
+
+test("android task stream emits task refresh when work is created", async () => {
+  const { device, deviceSecret } = enrollTestDevice("alipay-a", "android-stream-refresh");
+  const reader = await openAndroidTaskStream(device, deviceSecret, "stream-nonce-refresh-1");
+  await readAndroidStreamUntil(reader, "\"type\":\"heartbeat\"");
+
+  const task = createPresetQrGenerationTask(ctx, {
+    paymentAccountCode: "alipay-a",
+    amounts: [15],
+    offsetCount: 1
+  });
+  const text = await readAndroidStreamUntil(reader, "\"reason\":\"task_created\"");
+  await reader.cancel();
+
+  const heartbeat = text
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as { type: string; reason?: string; presetQrGenerationAssignment?: { taskId: number } })
+    .find((event) => event.type === "heartbeat" && event.reason === "task_created");
   expect(heartbeat?.presetQrGenerationAssignment?.taskId).toBe(task.id);
 });
 

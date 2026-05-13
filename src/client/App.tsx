@@ -78,6 +78,7 @@ import {
   createPaymentAccount,
   createQrGenerationTask,
   deleteDevice,
+  deletePaymentAccount,
   deleteQrCode,
   deleteQrGenerationTask,
   getAdminSession,
@@ -1404,6 +1405,16 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     }
   }, [message, refresh]);
 
+  const handleDeletePaymentAccount = useCallback(async (id: number) => {
+    try {
+      await deletePaymentAccount(id);
+      message.success("收款账号已删除");
+      refresh();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "收款账号删除失败");
+    }
+  }, [message, refresh]);
+
   const handleDeviceToggle = useCallback(async (id: number, enabled: boolean) => {
     try {
       await setDeviceEnabled(id, enabled);
@@ -1607,17 +1618,28 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     {
       title: "操作",
       key: "actions",
-      width: 130,
+      width: 170,
       render: (_, record) => (
         <Space size="small">
           <Switch checked={record.enabled} onChange={(checked) => handlePaymentAccountToggle(record.id, checked)} />
           <Tooltip title="配置">
             <Button size="small" icon={<SettingOutlined />} onClick={() => setSettingsPaymentAccount(record)} />
           </Tooltip>
+          <Popconfirm
+            title="删除收款账号？"
+            description="会解除设备绑定，并停止该账号正在执行的自动任务。历史订单和日志会保留。"
+            okText="删除"
+            okButtonProps={{ danger: true }}
+            onConfirm={() => handleDeletePaymentAccount(record.id)}
+          >
+            <Tooltip title="删除">
+              <Button size="small" danger icon={<DeleteOutlined />} />
+            </Tooltip>
+          </Popconfirm>
         </Space>
       )
     }
-  ], [handlePaymentAccountToggle]);
+  ], [handleDeletePaymentAccount, handlePaymentAccountToggle]);
 
   const deviceColumns = useMemo<Columns<Device>>(() => [
     { title: "设备 ID", dataIndex: "deviceId", width: 180, ellipsis: true },

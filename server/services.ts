@@ -93,6 +93,7 @@ interface PaymentAccountRow {
   max_offset_cents: number;
   fallback_pay_url: string | null;
   notification_keywords: string | null;
+  deleted_at: string | null;
   created_at: string;
 }
 
@@ -593,13 +594,15 @@ function parseNotificationTemplates(value: string | null) {
   }
 }
 
-function paymentAccountById(ctx: AppContext, id: number) {
-  const row = ctx.db.query("SELECT * FROM payment_accounts WHERE id = ?").get(id) as PaymentAccountRow | null;
+function paymentAccountById(ctx: AppContext, id: number, includeDeleted = false) {
+  const row = ctx.db.query(`SELECT * FROM payment_accounts WHERE id = ? ${includeDeleted ? "" : "AND deleted_at IS NULL"}`)
+    .get(id) as PaymentAccountRow | null;
   return row ? mapPaymentAccount(row) : null;
 }
 
-function paymentAccountByCode(ctx: AppContext, code: string) {
-  const row = ctx.db.query("SELECT * FROM payment_accounts WHERE code = ?").get(code) as PaymentAccountRow | null;
+function paymentAccountByCode(ctx: AppContext, code: string, includeDeleted = false) {
+  const row = ctx.db.query(`SELECT * FROM payment_accounts WHERE code = ? ${includeDeleted ? "" : "AND deleted_at IS NULL"}`)
+    .get(code) as PaymentAccountRow | null;
   return row ? mapPaymentAccount(row) : null;
 }
 
@@ -908,7 +911,12 @@ export function releaseExpiredLocks(ctx: AppContext) {
 }
 
 export function listPaymentAccounts(ctx: AppContext) {
-  const rows = ctx.db.query("SELECT * FROM payment_accounts ORDER BY payment_channel ASC, priority ASC, id ASC").all() as PaymentAccountRow[];
+  const rows = ctx.db.query(`
+    SELECT *
+    FROM payment_accounts
+    WHERE deleted_at IS NULL
+    ORDER BY payment_channel ASC, priority ASC, id ASC
+  `).all() as PaymentAccountRow[];
   return rows.map(mapPaymentAccount);
 }
 
@@ -1000,6 +1008,73 @@ export function updatePaymentAccountSettings(ctx: AppContext, id: number, input:
     notificationTemplates: notificationKeywords.length
   });
   return paymentAccountById(ctx, id);
+}
+
+export function deletePaymentAccount(ctx: AppContext, id: number) {
+  const account = paymentAccountById(ctx, id);
+  if (!account) {
+    throw apiError(404, "收款账号不存在");
+  }
+
+  const assignedRows = ctx.db.query(`
+    SELECT DISTINCT task_id AS taskId, assigned_device_id AS deviceId
+    FROM preset_qr_generation_items
+    WHERE payment_account_id = ? AND status = 'assigned' AND assigned_device_id IS NOT NULL
+  `).all(id) as Array<{ taskId: number; deviceId: string }>;
+  const boundDeviceRows = ctx.db.query(`
+    SELECT DISTINCT device_id AS deviceId
+    FROM device_payment_accounts
+    WHERE payment_account_id = ?
+  `).all(id) as Array<{ deviceId: string }>;
+  const affectedTasks = ctx.db.query(`
+    SELECT id
+    FROM preset_qr_generation_tasks
+    WHERE payment_account_id = ? AND status IN ('pending', 'running')
+  `).all(id) as Array<{ id: number }>;
+  const now = nowIso();
+
+  const transaction = ctx.db.transaction(() => {
+    ctx.db.query(`
+      UPDATE preset_qr_generation_items
+      SET status = 'failed',
+          assigned_device_id = NULL,
+          error = COALESCE(error, '收款账号已删除'),
+          updated_at = ?
+      WHERE payment_account_id = ? AND status IN ('pending', 'assigned')
+    `).run(now, id);
+    ctx.db.query(`
+      UPDATE preset_qr_generation_tasks
+      SET status = 'canceled',
+          last_error = '收款账号已删除',
+          updated_at = ?
+      WHERE payment_account_id = ? AND status IN ('pending', 'running')
+    `).run(now, id);
+    ctx.db.query("DELETE FROM device_payment_accounts WHERE payment_account_id = ?").run(id);
+    ctx.db.query("UPDATE payment_accounts SET enabled = 0, deleted_at = ? WHERE id = ?").run(now, id);
+  });
+  transaction();
+
+  for (const row of assignedRows) {
+    emitAndroidTaskStreamEvent(ctx, row.deviceId, {
+      type: "stop",
+      time: now,
+      taskId: row.taskId,
+      reason: "收款账号已删除"
+    });
+  }
+  for (const row of boundDeviceRows) {
+    emitAndroidRefresh(ctx, row.deviceId, "payment_account_deleted");
+  }
+  for (const task of affectedTasks) {
+    refreshPresetQrGenerationTaskStatus(ctx, task.id);
+  }
+  logSystem(ctx, "warn", "payment_accounts.deleted", "收款账号已删除", {
+    paymentAccountId: id,
+    code: account.code,
+    affectedTasks: affectedTasks.length,
+    affectedDevices: boundDeviceRows.length
+  });
+  return account;
 }
 
 export function upsertPresetQrCodes(ctx: AppContext, input: BulkPresetQrCodeInput) {
@@ -1692,7 +1767,7 @@ function enabledPaymentAccountRows(ctx: AppContext, paymentChannel: PaymentChann
   return ctx.db.query(`
     SELECT *
     FROM payment_accounts
-    WHERE payment_channel = ? AND enabled = 1
+    WHERE payment_channel = ? AND enabled = 1 AND deleted_at IS NULL
     ORDER BY priority ASC, id ASC
   `).all(paymentChannel) as PaymentAccountRow[];
 }
@@ -2075,7 +2150,7 @@ function listDevicePaymentAccounts(ctx: AppContext, deviceId: string, paymentCha
     SELECT pa.*
     FROM device_payment_accounts dpa
     JOIN payment_accounts pa ON pa.id = dpa.payment_account_id
-    WHERE dpa.device_id = ? ${channelFilter}
+    WHERE dpa.device_id = ? AND pa.deleted_at IS NULL ${channelFilter}
     ORDER BY pa.payment_channel ASC, pa.priority ASC, pa.id ASC
   `).all(...params) as PaymentAccountRow[];
 }

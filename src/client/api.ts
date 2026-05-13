@@ -137,6 +137,10 @@ export function createPaymentAccount(input: CreatePaymentAccountInput) {
   return request<PaymentAccount>("/api/payment-accounts", { method: "POST", body: JSON.stringify(input) });
 }
 
+export function deletePaymentAccount(id: number) {
+  return request<PaymentAccount>(`/api/payment-accounts/${id}`, { method: "DELETE" });
+}
+
 export function setPaymentAccountEnabled(id: number, enabled: boolean) {
   return request<PaymentAccount>(`/api/payment-accounts/${id}/enabled`, { method: "POST", body: JSON.stringify({ enabled }) });
 }

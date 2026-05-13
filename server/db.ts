@@ -39,6 +39,7 @@ function migrate(db: Database) {
       max_offset_cents INTEGER NOT NULL DEFAULT ${DEFAULT_MAX_OFFSET_CENTS},
       fallback_pay_url TEXT,
       notification_keywords TEXT NOT NULL DEFAULT '[]',
+      deleted_at TEXT,
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     );
 
@@ -267,6 +268,7 @@ function migrate(db: Database) {
     );
   `);
   ensureColumn(db, "payment_accounts", "notification_keywords", "ALTER TABLE payment_accounts ADD COLUMN notification_keywords TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, "payment_accounts", "deleted_at", "ALTER TABLE payment_accounts ADD COLUMN deleted_at TEXT");
   ensureColumn(db, "preset_qr_codes", "checked", "ALTER TABLE preset_qr_codes ADD COLUMN checked INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "preset_qr_codes", "remark", "ALTER TABLE preset_qr_codes ADD COLUMN remark TEXT");
   ensureColumn(db, "orders", "redirect_url", "ALTER TABLE orders ADD COLUMN redirect_url TEXT");

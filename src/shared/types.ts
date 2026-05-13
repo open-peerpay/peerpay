@@ -5,6 +5,7 @@ export type CallbackStatus = "pending" | "success" | "failed";
 export type CallbackType = "peerpay" | "easypay";
 export type PayMode = "preset" | "fallback";
 export type PaymentChannel = "wechat" | "alipay";
+export type PresetQrGenerationMode = "full" | "supplement";
 export type PresetQrGenerationTaskStatus = "pending" | "running" | "completed" | "failed" | "canceled";
 export type PresetQrGenerationItemStatus = "pending" | "assigned" | "succeeded" | "failed";
 
@@ -44,6 +45,7 @@ export interface PresetQrGenerationTask {
   paymentAccountName: string;
   paymentChannel: PaymentChannel;
   status: PresetQrGenerationTaskStatus;
+  generationMode: PresetQrGenerationMode;
   baseAmounts: string[];
   offsetCount: number;
   totalCount: number;
@@ -369,6 +371,7 @@ export interface BulkPresetQrCodeInput {
 export interface CreatePresetQrGenerationTaskInput {
   paymentAccountId?: number;
   paymentAccountCode?: string;
+  generationMode?: PresetQrGenerationMode;
   amounts: Array<string | number>;
   offsetCount?: number;
   offset?: number;

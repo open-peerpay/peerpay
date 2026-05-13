@@ -42,6 +42,7 @@ import type {
   PaymentChannel,
   PresetQrGenerationAssignment,
   PresetQrGenerationItemStatus,
+  PresetQrGenerationMode,
   PresetQrGenerationTask,
   PresetQrGenerationTaskStatus,
   PresetQrCode,
@@ -118,6 +119,7 @@ interface PresetQrGenerationTaskRow {
   payment_account_name: string;
   payment_channel: PaymentChannel;
   status: PresetQrGenerationTaskStatus;
+  generation_mode: PresetQrGenerationMode;
   base_amounts_json: string;
   offset_count: number;
   total_count: number;
@@ -436,6 +438,7 @@ function mapPresetQrGenerationTask(row: PresetQrGenerationTaskRow): PresetQrGene
     paymentAccountName: row.payment_account_name,
     paymentChannel: row.payment_channel,
     status: row.status,
+    generationMode: row.generation_mode,
     baseAmounts: parseStringList(row.base_amounts_json),
     offsetCount: row.offset_count,
     totalCount: row.total_count,
@@ -1228,6 +1231,14 @@ function normalizeGenerationOffsetCount(value: unknown) {
   return offsetCount;
 }
 
+function normalizePresetQrGenerationMode(value: unknown): PresetQrGenerationMode {
+  const mode = String(value ?? "full").trim();
+  if (mode === "full" || mode === "supplement") {
+    return mode;
+  }
+  throw apiError(400, "生成模式必须是全量或补充");
+}
+
 function normalizeGenerationBaseAmounts(values: unknown) {
   if (!Array.isArray(values) || values.length === 0) {
     throw apiError(400, "请提供至少一个整数金额");
@@ -1258,16 +1269,40 @@ function normalizeGenerationBaseAmounts(values: unknown) {
   return amounts;
 }
 
+function existingPresetQrAmountSet(ctx: AppContext, paymentAccountId: number, amountCents: number[]) {
+  if (amountCents.length === 0) {
+    return new Set<number>();
+  }
+  const placeholders = amountCents.map(() => "?").join(", ");
+  const rows = ctx.db.query(`
+    SELECT amount_cents AS amountCents
+    FROM preset_qr_codes
+    WHERE payment_account_id = ? AND amount_cents IN (${placeholders})
+  `).all(paymentAccountId, ...amountCents) as Array<{ amountCents: number }>;
+  return new Set(rows.map((row) => row.amountCents));
+}
+
 export function createPresetQrGenerationTask(ctx: AppContext, input: CreatePresetQrGenerationTaskInput) {
   const account = resolvePaymentAccount(ctx, input, true);
+  const generationMode = normalizePresetQrGenerationMode(input.generationMode);
   const baseAmountCents = normalizeGenerationBaseAmounts(input.amounts);
   const offsetCount = normalizeGenerationOffsetCount(input.offsetCount ?? input.offset);
-  const itemAmounts = [...new Set(baseAmountCents.flatMap((amount) => {
+  const requestedItemAmounts = [...new Set(baseAmountCents.flatMap((amount) => {
     return Array.from({ length: offsetCount }, (_, offset) => amount + offset);
   }))].sort((left, right) => left - right);
 
-  if (itemAmounts.length > QR_GENERATION_MAX_ITEMS) {
+  if (requestedItemAmounts.length > QR_GENERATION_MAX_ITEMS) {
     throw apiError(400, `单个生成任务不能超过 ${QR_GENERATION_MAX_ITEMS} 个二维码`);
+  }
+  const existingAmounts = generationMode === "supplement"
+    ? existingPresetQrAmountSet(ctx, account.id, requestedItemAmounts)
+    : new Set<number>();
+  const itemAmounts = generationMode === "supplement"
+    ? requestedItemAmounts.filter((amount) => !existingAmounts.has(amount))
+    : requestedItemAmounts;
+
+  if (itemAmounts.length === 0) {
+    throw apiError(409, "补充模式下没有缺失金额需要生成");
   }
 
   const now = nowIso();
@@ -1275,10 +1310,10 @@ export function createPresetQrGenerationTask(ctx: AppContext, input: CreatePrese
   const transaction = ctx.db.transaction(() => {
     const result = ctx.db.query(`
       INSERT INTO preset_qr_generation_tasks(
-        payment_account_id, status, base_amounts_json, offset_count, total_count, created_at, updated_at
+        payment_account_id, status, generation_mode, base_amounts_json, offset_count, total_count, created_at, updated_at
       )
-      VALUES (?, 'pending', ?, ?, ?, ?, ?)
-    `).run(account.id, JSON.stringify(baseAmounts), offsetCount, itemAmounts.length, now, now);
+      VALUES (?, 'pending', ?, ?, ?, ?, ?, ?)
+    `).run(account.id, generationMode, JSON.stringify(baseAmounts), offsetCount, itemAmounts.length, now, now);
 
     const taskId = Number(result.lastInsertRowid);
     const insertItem = ctx.db.query(`
@@ -1302,7 +1337,10 @@ export function createPresetQrGenerationTask(ctx: AppContext, input: CreatePrese
   logSystem(ctx, "info", "preset_qr_generation_tasks.created", "定额二维码自动生成任务已创建", {
     taskId,
     paymentAccountId: account.id,
+    generationMode,
     totalCount: itemAmounts.length,
+    requestedCount: requestedItemAmounts.length,
+    skippedCount: requestedItemAmounts.length - itemAmounts.length,
     offsetCount
   });
   emitAndroidRefreshForPaymentAccount(ctx, account.id, "task_created");

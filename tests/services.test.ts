@@ -356,6 +356,7 @@ test("dispatches preset qr generation tasks through heartbeat and stores uncheck
 
   expect(task.totalCount).toBe(3);
   expect(task.status).toBe("pending");
+  expect(task.generationMode).toBe("full");
 
   const device = enrollTestDevice("alipay-a", "android-generator-a").device;
   const heartbeat = touchDevice(ctx, { appVersion: "0.1.0" }, device);
@@ -381,6 +382,42 @@ test("dispatches preset qr generation tasks through heartbeat and stores uncheck
   const updatedTask = listPresetQrGenerationTasks(ctx).items.find((item) => item.id === task.id);
   expect(updatedTask?.status).toBe("running");
   expect(updatedTask?.succeededCount).toBe(1);
+});
+
+test("supplement preset qr generation only creates missing amounts", () => {
+  upsertPresetQrCodes(ctx, {
+    paymentAccountCode: "alipay-a",
+    items: [{ amount: "10.01", payUrl: "https://pay.example/alipay-a/10.01" }]
+  });
+
+  const task = createPresetQrGenerationTask(ctx, {
+    paymentAccountCode: "alipay-a",
+    generationMode: "supplement",
+    amounts: [10],
+    offsetCount: 3
+  });
+
+  expect(task.generationMode).toBe("supplement");
+  expect(task.totalCount).toBe(2);
+
+  const device = enrollTestDevice("alipay-a", "android-generator-supplement").device;
+  const heartbeat = touchDevice(ctx, { appVersion: "0.1.0" }, device);
+  expect(heartbeat.presetQrGenerationAssignment?.taskId).toBe(task.id);
+  expect(heartbeat.presetQrGenerationAssignment?.items.map((item) => item.amount)).toEqual(["10.00", "10.02"]);
+
+  upsertPresetQrCodes(ctx, {
+    paymentAccountCode: "alipay-a",
+    items: [
+      { amount: "10.00", payUrl: "https://pay.example/alipay-a/10.00" },
+      { amount: "10.02", payUrl: "https://pay.example/alipay-a/10.02" }
+    ]
+  });
+  expect(() => createPresetQrGenerationTask(ctx, {
+    paymentAccountCode: "alipay-a",
+    generationMode: "supplement",
+    amounts: [10],
+    offsetCount: 3
+  })).toThrow("没有缺失金额");
 });
 
 test("can stop delete and retry preset qr generation tasks", () => {

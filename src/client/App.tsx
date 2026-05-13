@@ -15,6 +15,7 @@ import {
   Popconfirm,
   QRCode as AntQRCode,
   Select,
+  Segmented,
   Space,
   Statistic,
   Switch,
@@ -60,6 +61,7 @@ import type {
   PaymentPageSettings,
   PaymentAccount,
   PaymentChannel,
+  PresetQrGenerationMode,
   PresetQrGenerationTask,
   PresetQrCode,
   SystemLog
@@ -251,6 +253,11 @@ const qrTaskStatusText: Record<string, string> = {
   completed: "已完成",
   failed: "失败",
   canceled: "已取消"
+};
+
+const qrGenerationModeText: Record<PresetQrGenerationMode, string> = {
+  full: "全量",
+  supplement: "补充"
 };
 
 const PAYMENT_PAGE_POLL_MS = 3_000;
@@ -883,7 +890,7 @@ function QrGenerationTaskModal({ paymentAccounts, open, onCancel, onRefresh }: M
     value: account.code
   })), [paymentAccounts]);
 
-  const handleFinish = useCallback(async (values: { paymentAccountCode: string; amounts: string; offsetCount: number }) => {
+  const handleFinish = useCallback(async (values: { paymentAccountCode: string; generationMode: PresetQrGenerationMode; amounts: string; offsetCount: number }) => {
     let amounts: number[];
     try {
       amounts = normalizeIntegerAmountList(values.amounts);
@@ -900,6 +907,7 @@ function QrGenerationTaskModal({ paymentAccounts, open, onCancel, onRefresh }: M
     try {
       const task = await createQrGenerationTask({
         paymentAccountCode: values.paymentAccountCode,
+        generationMode: values.generationMode,
         amounts,
         offsetCount: values.offsetCount
       });
@@ -916,9 +924,18 @@ function QrGenerationTaskModal({ paymentAccounts, open, onCancel, onRefresh }: M
 
   return (
     <Modal title="自动生成定额二维码" open={open} confirmLoading={saving} destroyOnHidden okText="创建任务" cancelText="取消" onOk={form.submit} onCancel={onCancel}>
-      <Form form={form} layout="vertical" initialValues={{ offsetCount: 10 }} onFinish={handleFinish}>
+      <Form form={form} layout="vertical" initialValues={{ generationMode: "full", offsetCount: 10 }} onFinish={handleFinish}>
         <Form.Item name="paymentAccountCode" label="收款账号" rules={[{ required: true, message: "请选择收款账号" }]}>
           <Select options={paymentAccountOptions} placeholder="选择收款账号" />
+        </Form.Item>
+        <Form.Item name="generationMode" label="生成模式" rules={[{ required: true, message: "请选择生成模式" }]}>
+          <Segmented
+            block
+            options={[
+              { label: "全量", value: "full" },
+              { label: "补充", value: "supplement" }
+            ]}
+          />
         </Form.Item>
         <Form.Item
           name="amounts"
@@ -1486,6 +1503,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     { title: "任务", dataIndex: "id", width: 90, render: (value) => `#${value}` },
     { title: "收款账号", dataIndex: "paymentAccountCode", width: 130, responsive: ["sm"], render: (value) => value || "-" },
     { title: "方式", dataIndex: "paymentChannel", width: 90, responsive: ["sm"], render: (value) => <PaymentChannelTag value={value} /> },
+    { title: "模式", dataIndex: "generationMode", width: 80, render: (value: PresetQrGenerationMode) => <Tag color={value === "supplement" ? "blue" : "default"}>{qrGenerationModeText[value] ?? value}</Tag> },
     { title: "基准金额", dataIndex: "baseAmounts", width: 180, ellipsis: true, render: (value: string[]) => value.join(", ") },
     { title: "偏移", dataIndex: "offsetCount", width: 80, render: (value) => `${value} 个` },
     {

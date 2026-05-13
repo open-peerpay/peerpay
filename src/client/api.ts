@@ -120,6 +120,18 @@ export function createQrGenerationTask(input: CreatePresetQrGenerationTaskInput)
   });
 }
 
+export function deleteQrGenerationTask(id: number) {
+  return request<PresetQrGenerationTask>(`/api/preset-qrcode-generation-tasks/${id}`, { method: "DELETE" });
+}
+
+export function retryQrGenerationTask(id: number) {
+  return request<PresetQrGenerationTask>(`/api/preset-qrcode-generation-tasks/${id}/retry`, { method: "POST" });
+}
+
+export function stopQrGenerationTask(id: number) {
+  return request<PresetQrGenerationTask>(`/api/preset-qrcode-generation-tasks/${id}/stop`, { method: "POST" });
+}
+
 export function createPaymentAccount(input: CreatePaymentAccountInput) {
   return request<PaymentAccount>("/api/payment-accounts", { method: "POST", body: JSON.stringify(input) });
 }
@@ -142,6 +154,10 @@ export function getPaymentPage(orderId: string) {
 
 export function setDeviceEnabled(id: number, enabled: boolean) {
   return request<Device>(`/api/devices/${id}/enabled`, { method: "POST", body: JSON.stringify({ enabled }) });
+}
+
+export function deleteDevice(id: number) {
+  return request<Device>(`/api/devices/${id}`, { method: "DELETE" });
 }
 
 export function unbindDevicePaymentAccount(deviceId: number, paymentAccountId: number) {

@@ -55,6 +55,30 @@ export interface PresetQrGenerationTask {
   updatedAt: string;
 }
 
+export type AndroidTaskStreamEvent =
+  | {
+    type: "hello" | "ping";
+    time: string;
+  }
+  | {
+    type: "heartbeat";
+    time: string;
+    reason: string;
+    device: HeartbeatResult;
+    presetQrGenerationAssignment: PresetQrGenerationAssignment | null;
+  }
+  | {
+    type: "refresh";
+    time: string;
+    reason: string;
+  }
+  | {
+    type: "stop";
+    time: string;
+    taskId: number;
+    reason: string;
+  };
+
 export interface PresetQrGenerationAssignment {
   taskId: number;
   paymentAccountId: number;

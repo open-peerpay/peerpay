@@ -6,6 +6,8 @@ import {
   createOrder,
   createPaymentAccount,
   createPresetQrGenerationTask,
+  deleteDevice,
+  deletePresetQrGenerationTask,
   enrollAndroidDevice,
   getOrder,
   getPaymentPageSettings,
@@ -13,14 +15,17 @@ import {
   handleAndroidNotification,
   handleAndroidPresetQrGenerationResult,
   listAmountOccupations,
+  listDevices,
   listNotificationLogs,
   listPresetQrGenerationTasks,
   listPresetQrCodes,
   paymentPagePath,
+  retryPresetQrGenerationTask,
   setPaymentAccountEnabled,
   setPresetQrCodeChecked,
   signAndroidRequest,
   signPayload,
+  stopPresetQrGenerationTask,
   touchDevice,
   unbindDevicePaymentAccount,
   updatePaymentAccountSettings,
@@ -331,6 +336,123 @@ test("dispatches preset qr generation tasks through heartbeat and stores uncheck
   const updatedTask = listPresetQrGenerationTasks(ctx).items.find((item) => item.id === task.id);
   expect(updatedTask?.status).toBe("running");
   expect(updatedTask?.succeededCount).toBe(1);
+});
+
+test("can stop delete and retry preset qr generation tasks", () => {
+  const task = createPresetQrGenerationTask(ctx, {
+    paymentAccountCode: "alipay-a",
+    amounts: [11],
+    offsetCount: 1
+  });
+  const device = enrollTestDevice("alipay-a", "android-generator-controls").device;
+  const heartbeat = touchDevice(ctx, { appVersion: "0.1.0" }, device);
+  const item = heartbeat.presetQrGenerationAssignment?.items[0];
+  if (!item) {
+    throw new Error("missing assigned item");
+  }
+
+  expect(() => deletePresetQrGenerationTask(ctx, task.id)).toThrow("执行中");
+  const stopped = stopPresetQrGenerationTask(ctx, task.id);
+  expect(stopped.status).toBe("canceled");
+  expect(touchDevice(ctx, { appVersion: "0.1.0" }, device).presetQrGenerationAssignment).toBeNull();
+  expect(deletePresetQrGenerationTask(ctx, task.id).id).toBe(task.id);
+
+  const retryTask = createPresetQrGenerationTask(ctx, {
+    paymentAccountCode: "alipay-a",
+    amounts: [12],
+    offsetCount: 1
+  });
+  const retryHeartbeat = touchDevice(ctx, { appVersion: "0.1.0" }, device);
+  const retryItem = retryHeartbeat.presetQrGenerationAssignment?.items[0];
+  if (!retryItem) {
+    throw new Error("missing retry item");
+  }
+  handleAndroidPresetQrGenerationResult(ctx, {
+    taskId: retryTask.id,
+    itemId: retryItem.itemId,
+    amount: retryItem.amount,
+    error: "未识别到二维码"
+  }, retryHeartbeat);
+  const failed = listPresetQrGenerationTasks(ctx).items.find((item) => item.id === retryTask.id);
+  expect(failed?.status).toBe("failed");
+
+  const retried = retryPresetQrGenerationTask(ctx, retryTask.id);
+  expect(retried.status).toBe("pending");
+  const reassigned = touchDevice(ctx, { appVersion: "0.1.0" }, device);
+  expect(reassigned.presetQrGenerationAssignment?.taskId).toBe(retryTask.id);
+});
+
+test("deleting an android device releases assigned qr generation items", () => {
+  const task = createPresetQrGenerationTask(ctx, {
+    paymentAccountCode: "wechat-a",
+    amounts: [13],
+    offsetCount: 1
+  });
+  const device = enrollTestDevice("wechat-a", "android-delete-device").device;
+  const heartbeat = touchDevice(ctx, { appVersion: "0.1.0" }, device);
+  expect(heartbeat.presetQrGenerationAssignment?.taskId).toBe(task.id);
+
+  const deleted = deleteDevice(ctx, device.id);
+  expect(deleted.deviceId).toBe("android-delete-device");
+  expect(listDevices(ctx).some((item) => item.id === device.id)).toBe(false);
+
+  const replacement = enrollTestDevice("wechat-a", "android-delete-device-replacement").device;
+  const reassigned = touchDevice(ctx, { appVersion: "0.1.0" }, replacement);
+  expect(reassigned.presetQrGenerationAssignment?.taskId).toBe(task.id);
+});
+
+test("android task stream emits heartbeat assignments", async () => {
+  const task = createPresetQrGenerationTask(ctx, {
+    paymentAccountCode: "alipay-a",
+    amounts: [14],
+    offsetCount: 1
+  });
+  const { device, deviceSecret } = enrollTestDevice("alipay-a", "android-stream");
+  const bodyText = JSON.stringify({ appVersion: "0.1.0" });
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const nonce = "stream-nonce-1";
+  const signature = signAndroidRequest({
+    method: "POST",
+    path: "/api/android/task-stream",
+    timestamp,
+    nonce,
+    bodyText,
+    deviceSecret
+  });
+  const routes = createApiRoutes(ctx);
+  const response = await routes["/api/android/task-stream"].POST(new Request("http://peerpay.test/api/android/task-stream", {
+    method: "POST",
+    headers: {
+      "x-peerpay-device-id": device.deviceId,
+      "x-peerpay-timestamp": timestamp,
+      "x-peerpay-nonce": nonce,
+      "x-peerpay-signature": signature
+    },
+    body: bodyText
+  }));
+  expect(response.status).toBe(200);
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("missing stream body");
+  }
+  const decoder = new TextDecoder();
+  let text = "";
+  for (let i = 0; i < 3 && !text.includes("\"type\":\"heartbeat\""); i++) {
+    const chunk = await reader.read();
+    if (chunk.done) {
+      break;
+    }
+    text += decoder.decode(chunk.value, { stream: true });
+  }
+  await reader.cancel();
+
+  const heartbeat = text
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as { type: string; presetQrGenerationAssignment?: { taskId: number } })
+    .find((event) => event.type === "heartbeat");
+  expect(heartbeat?.presetQrGenerationAssignment?.taskId).toBe(task.id);
 });
 
 test("does not offset cent-level amounts but can use another account", () => {

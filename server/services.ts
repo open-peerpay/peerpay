@@ -12,6 +12,7 @@ import {
 import type {
   AndroidNotificationInput,
   AndroidPresetQrGenerationResultInput,
+  AndroidTaskStreamEvent,
   AmountOccupation,
   BulkPresetQrCodeInput,
   CallbackLog,
@@ -234,12 +235,16 @@ interface SystemLogRow {
 }
 
 export type OrderPaidListener = (ctx: AppContext, order: Order) => void;
+export type AndroidTaskStreamClient = {
+  send: (event: AndroidTaskStreamEvent) => void;
+};
 
 export interface AppContext {
   db: Database;
   runCallbacks: boolean;
   callbackMaxAttempts: number;
   orderPaidListeners: OrderPaidListener[];
+  androidTaskStreams: Map<string, Set<AndroidTaskStreamClient>>;
 }
 
 export function createAppContext(options: {
@@ -251,7 +256,8 @@ export function createAppContext(options: {
     db: createDatabase(options.databaseUrl),
     runCallbacks: options.runCallbacks ?? Bun.env.NODE_ENV !== "test",
     callbackMaxAttempts: options.callbackMaxAttempts ?? MAX_CALLBACK_ATTEMPTS,
-    orderPaidListeners: []
+    orderPaidListeners: [],
+    androidTaskStreams: new Map()
   };
 }
 
@@ -261,6 +267,59 @@ export function closeAppContext(ctx: AppContext) {
 
 export function nowIso() {
   return new Date().toISOString();
+}
+
+export function registerAndroidTaskStream(ctx: AppContext, deviceId: string, client: AndroidTaskStreamClient) {
+  let clients = ctx.androidTaskStreams.get(deviceId);
+  if (!clients) {
+    clients = new Set();
+    ctx.androidTaskStreams.set(deviceId, clients);
+  }
+  clients.add(client);
+  return () => {
+    const activeClients = ctx.androidTaskStreams.get(deviceId);
+    if (!activeClients) {
+      return;
+    }
+    activeClients.delete(client);
+    if (activeClients.size === 0) {
+      ctx.androidTaskStreams.delete(deviceId);
+    }
+  };
+}
+
+function emitAndroidTaskStreamEvent(ctx: AppContext, deviceId: string, event: AndroidTaskStreamEvent) {
+  const clients = ctx.androidTaskStreams.get(deviceId);
+  if (!clients || clients.size === 0) {
+    return;
+  }
+
+  for (const client of [...clients]) {
+    try {
+      client.send(event);
+    } catch (error) {
+      logSystem(ctx, "warn", "android_task_stream.send_failed", "安卓长连接事件发送失败", {
+        deviceId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+}
+
+function emitAndroidRefresh(ctx: AppContext, deviceId: string, reason: string) {
+  emitAndroidTaskStreamEvent(ctx, deviceId, { type: "refresh", time: nowIso(), reason });
+}
+
+function emitAndroidRefreshForPaymentAccount(ctx: AppContext, paymentAccountId: number, reason: string) {
+  const rows = ctx.db.query(`
+    SELECT DISTINCT dpa.device_id
+    FROM device_payment_accounts dpa
+    JOIN devices d ON d.device_id = dpa.device_id
+    WHERE dpa.payment_account_id = ? AND d.enabled = 1
+  `).all(paymentAccountId) as Array<{ device_id: string }>;
+  for (const row of rows) {
+    emitAndroidRefresh(ctx, row.device_id, reason);
+  }
 }
 
 function addMinutes(minutes: number) {
@@ -1130,6 +1189,7 @@ export function createPresetQrGenerationTask(ctx: AppContext, input: CreatePrese
     totalCount: itemAmounts.length,
     offsetCount
   });
+  emitAndroidRefreshForPaymentAccount(ctx, account.id, "task_created");
   return task;
 }
 
@@ -1173,6 +1233,117 @@ export function listPresetQrGenerationTasks(
   `, ...params);
 
   return { items: rows.map(mapPresetQrGenerationTask), total, limit, offset };
+}
+
+export function deletePresetQrGenerationTask(ctx: AppContext, id: number) {
+  const task = presetQrGenerationTaskById(ctx, id);
+  if (!task) {
+    throw apiError(404, "二维码生成任务不存在");
+  }
+  if (task.status === "running") {
+    throw apiError(409, "执行中的二维码生成任务不能删除，请先停止任务");
+  }
+
+  ctx.db.query("DELETE FROM preset_qr_generation_tasks WHERE id = ?").run(id);
+  logSystem(ctx, "warn", "preset_qr_generation_tasks.deleted", "定额二维码自动生成任务已删除", {
+    taskId: id,
+    paymentAccountId: task.paymentAccountId,
+    status: task.status
+  });
+  return task;
+}
+
+export function retryPresetQrGenerationTask(ctx: AppContext, id: number) {
+  const task = presetQrGenerationTaskById(ctx, id);
+  if (!task) {
+    throw apiError(404, "二维码生成任务不存在");
+  }
+  if (task.status !== "failed") {
+    throw apiError(409, "只有失败的二维码生成任务可以重试");
+  }
+
+  const now = nowIso();
+  ctx.db.transaction(() => {
+    ctx.db.query(`
+      UPDATE preset_qr_generation_items
+      SET status = 'pending',
+          assigned_device_id = NULL,
+          error = NULL,
+          assigned_at = NULL,
+          completed_at = NULL,
+          updated_at = ?
+      WHERE task_id = ? AND status = 'failed'
+    `).run(now, id);
+    ctx.db.query(`
+      UPDATE preset_qr_generation_tasks
+      SET status = 'pending', last_error = NULL, updated_at = ?
+      WHERE id = ?
+    `).run(now, id);
+  })();
+
+  const updated = presetQrGenerationTaskById(ctx, id);
+  if (!updated) {
+    throw apiError(500, "二维码生成任务重试失败");
+  }
+  logSystem(ctx, "info", "preset_qr_generation_tasks.retried", "定额二维码自动生成任务已重试", {
+    taskId: id,
+    paymentAccountId: task.paymentAccountId
+  });
+  emitAndroidRefreshForPaymentAccount(ctx, task.paymentAccountId, "task_retried");
+  return updated;
+}
+
+export function stopPresetQrGenerationTask(ctx: AppContext, id: number) {
+  const task = presetQrGenerationTaskById(ctx, id);
+  if (!task) {
+    throw apiError(404, "二维码生成任务不存在");
+  }
+  if (!["pending", "running"].includes(task.status)) {
+    return task;
+  }
+
+  const assignedDevices = ctx.db.query(`
+    SELECT DISTINCT assigned_device_id AS deviceId
+    FROM preset_qr_generation_items
+    WHERE task_id = ? AND status = 'assigned' AND assigned_device_id IS NOT NULL
+  `).all(id) as Array<{ deviceId: string }>;
+  const now = nowIso();
+  ctx.db.transaction(() => {
+    ctx.db.query(`
+      UPDATE preset_qr_generation_items
+      SET status = 'failed',
+          assigned_device_id = NULL,
+          error = COALESCE(error, '任务已停止'),
+          assigned_at = NULL,
+          completed_at = ?,
+          updated_at = ?
+      WHERE task_id = ? AND status IN ('pending', 'assigned')
+    `).run(now, now, id);
+    ctx.db.query(`
+      UPDATE preset_qr_generation_tasks
+      SET status = 'canceled', last_error = '任务已停止', updated_at = ?
+      WHERE id = ?
+    `).run(now, id);
+  })();
+
+  for (const row of assignedDevices) {
+    emitAndroidTaskStreamEvent(ctx, row.deviceId, {
+      type: "stop",
+      time: nowIso(),
+      taskId: id,
+      reason: "任务已在后台停止"
+    });
+  }
+  emitAndroidRefreshForPaymentAccount(ctx, task.paymentAccountId, "task_stopped");
+  const updated = presetQrGenerationTaskById(ctx, id);
+  if (!updated) {
+    throw apiError(500, "二维码生成任务停止失败");
+  }
+  logSystem(ctx, "warn", "preset_qr_generation_tasks.stopped", "定额二维码自动生成任务已停止", {
+    taskId: id,
+    paymentAccountId: task.paymentAccountId
+  });
+  return updated;
 }
 
 function normalizePresetQrGenerationTaskStatus(value: string) {
@@ -1450,6 +1621,7 @@ export function handleAndroidPresetQrGenerationResult(
       paymentAccountId: row.payment_account_id,
       amount: formatMoney(row.amount_cents)
     });
+    emitAndroidRefresh(ctx, verifiedDevice.deviceId, "item_succeeded");
     return { task, itemId, saved: true };
   }
 
@@ -1471,6 +1643,7 @@ export function handleAndroidPresetQrGenerationResult(
     amount: formatMoney(row.amount_cents),
     error
   });
+  emitAndroidRefresh(ctx, verifiedDevice.deviceId, "item_failed");
   return { task, itemId, saved: false };
 }
 
@@ -1881,6 +2054,48 @@ export function setDeviceEnabled(ctx: AppContext, id: number, enabled: boolean) 
     .run(enabled ? 1 : 0, now, id);
   logSystem(ctx, "info", "devices.enabled", "设备状态已更新", { deviceRowId: id, enabled });
   return listDevices(ctx).find((device) => device.id === id) ?? null;
+}
+
+export function deleteDevice(ctx: AppContext, id: number) {
+  const device = ctx.db.query("SELECT * FROM devices WHERE id = ?").get(id) as DeviceRow | null;
+  if (!device) {
+    throw apiError(404, "设备不存在");
+  }
+  const mapped = mapDevice(ctx, device);
+  const affectedTasks = ctx.db.query(`
+    SELECT DISTINCT task_id AS taskId
+    FROM preset_qr_generation_items
+    WHERE assigned_device_id = ?
+  `).all(device.device_id) as Array<{ taskId: number }>;
+  const now = nowIso();
+
+  ctx.db.transaction(() => {
+    ctx.db.query(`
+      UPDATE preset_qr_generation_items
+      SET status = CASE WHEN status = 'assigned' THEN 'pending' ELSE status END,
+          assigned_device_id = NULL,
+          assigned_at = NULL,
+          updated_at = ?
+      WHERE assigned_device_id = ?
+    `).run(now, device.device_id);
+    ctx.db.query("DELETE FROM device_nonces WHERE device_id = ?").run(device.device_id);
+    ctx.db.query("DELETE FROM devices WHERE id = ?").run(id);
+  })();
+
+  for (const task of affectedTasks) {
+    refreshPresetQrGenerationTaskStatus(ctx, task.taskId);
+  }
+  emitAndroidTaskStreamEvent(ctx, device.device_id, {
+    type: "stop",
+    time: nowIso(),
+    taskId: 0,
+    reason: "设备已在后台删除"
+  });
+  logSystem(ctx, "warn", "devices.deleted", "安卓设备已删除", {
+    deviceRowId: id,
+    deviceId: device.device_id
+  });
+  return mapped;
 }
 
 export function unbindDevicePaymentAccount(ctx: AppContext, deviceRowId: number, paymentAccountId: number) {

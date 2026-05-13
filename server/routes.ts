@@ -4,7 +4,9 @@ import {
   createPaymentAccount,
   createPresetQrGenerationTask,
   dashboardStats,
+  deleteDevice,
   deletePresetQrCode,
+  deletePresetQrGenerationTask,
   dispatchCallback,
   enrollAndroidDevice,
   getPaymentPageSettings,
@@ -21,9 +23,12 @@ import {
   listPresetQrCodes,
   listSystemLogs,
   paymentPagePath,
+  registerAndroidTaskStream,
+  retryPresetQrGenerationTask,
   setDeviceEnabled,
   setPaymentAccountEnabled,
   setPresetQrCodeChecked,
+  stopPresetQrGenerationTask,
   touchDevice,
   unbindDevicePaymentAccount,
   updateOrderStatus,
@@ -44,12 +49,14 @@ import {
 import { createEasyPayRoutes } from "./easypay";
 import { boolFromBody, corsHeaders, json, pageOptions, parseJsonText, readJson, withErrors } from "./http";
 import type {
+  AndroidTaskStreamEvent,
   AndroidNotificationInput,
   AndroidPresetQrGenerationResultInput,
   BulkPresetQrCodeInput,
   CreateDeviceEnrollmentInput,
   CreateOrderInput,
   CreatePresetQrGenerationTaskInput,
+  Device,
   EnrollDeviceInput,
   HeartbeatInput,
   Order,
@@ -80,6 +87,89 @@ function publicOrder(req: Request, order: Order) {
     ...order,
     payUrl: publicUrl(req, paymentPagePath(order.id))
   };
+}
+
+function androidTaskStreamResponse(ctx: AppContext, input: HeartbeatInput, verifiedDevice: Device) {
+  const encoder = new TextEncoder();
+  let closed = false;
+  let unregister: (() => void) | null = null;
+  let pingTimer: ReturnType<typeof setInterval> | null = null;
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const write = (event: AndroidTaskStreamEvent) => {
+        if (closed) {
+          return;
+        }
+        try {
+          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        } catch {
+          closed = true;
+        }
+      };
+      const sendHeartbeat = (reason: string) => {
+        if (closed) {
+          return;
+        }
+        try {
+          const heartbeat = touchDevice(ctx, input, verifiedDevice);
+          write({
+            type: "heartbeat",
+            time: new Date().toISOString(),
+            reason,
+            device: heartbeat,
+            presetQrGenerationAssignment: heartbeat.presetQrGenerationAssignment
+          });
+        } catch {
+          write({
+            type: "stop",
+            time: new Date().toISOString(),
+            taskId: 0,
+            reason: "设备连接已失效"
+          });
+          if (pingTimer) {
+            clearInterval(pingTimer);
+          }
+          unregister?.();
+          closed = true;
+          controller.close();
+        }
+      };
+
+      unregister = registerAndroidTaskStream(ctx, verifiedDevice.deviceId, {
+        send(event) {
+          if (event.type === "refresh") {
+            sendHeartbeat(event.reason);
+            return;
+          }
+          write(event);
+        }
+      });
+      write({ type: "hello", time: new Date().toISOString() });
+      sendHeartbeat("connected");
+      pingTimer = setInterval(() => {
+        write({ type: "ping", time: new Date().toISOString() });
+        sendHeartbeat("interval");
+      }, 30_000);
+      (pingTimer as unknown as { unref?: () => void }).unref?.();
+    },
+    cancel() {
+      closed = true;
+      if (pingTimer) {
+        clearInterval(pingTimer);
+      }
+      unregister?.();
+    }
+  });
+
+  return new Response(stream, {
+    headers: {
+      ...corsHeaders,
+      "content-type": "application/x-ndjson; charset=utf-8",
+      "cache-control": "no-store, no-transform",
+      "x-peerpay-stream-protocol": "android-task-stream-v1"
+    }
+  });
 }
 
 export function createApiRoutes(ctx: AppContext) {
@@ -213,6 +303,21 @@ export function createApiRoutes(ctx: AppContext) {
         });
       })
     },
+    "/api/preset-qrcode-generation-tasks/:id": {
+      DELETE: (req: RouteRequest<{ id: string }>) => withErrors(() => {
+        return admin(ctx, req, () => json(deletePresetQrGenerationTask(ctx, Number(req.params.id))));
+      })
+    },
+    "/api/preset-qrcode-generation-tasks/:id/retry": {
+      POST: (req: RouteRequest<{ id: string }>) => withErrors(() => {
+        return admin(ctx, req, () => json(retryPresetQrGenerationTask(ctx, Number(req.params.id))));
+      })
+    },
+    "/api/preset-qrcode-generation-tasks/:id/stop": {
+      POST: (req: RouteRequest<{ id: string }>) => withErrors(() => {
+        return admin(ctx, req, () => json(stopPresetQrGenerationTask(ctx, Number(req.params.id))));
+      })
+    },
     "/api/amount-occupations": {
       GET: (req: Request) => withErrors(() => admin(ctx, req, () => {
         const url = new URL(req.url);
@@ -259,8 +364,20 @@ export function createApiRoutes(ctx: AppContext) {
         return json(touchDevice(ctx, parseJsonText<HeartbeatInput>(bodyText), device));
       })
     },
+    "/api/android/task-stream": {
+      POST: (req: Request) => withErrors(async () => {
+        const bodyText = await req.text();
+        const device = verifyAndroidRequest(ctx, req, bodyText);
+        return androidTaskStreamResponse(ctx, parseJsonText<HeartbeatInput>(bodyText), device);
+      })
+    },
     "/api/devices": {
       GET: (req: Request) => withErrors(() => admin(ctx, req, () => json(listDevices(ctx))))
+    },
+    "/api/devices/:id": {
+      DELETE: (req: RouteRequest<{ id: string }>) => withErrors(() => {
+        return admin(ctx, req, () => json(deleteDevice(ctx, Number(req.params.id))));
+      })
     },
     "/api/device-enrollments": {
       POST: (req: Request) => withErrors(async () => admin(ctx, req, async () => {

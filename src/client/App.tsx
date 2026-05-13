@@ -43,6 +43,7 @@ import {
   ReloadOutlined,
   SendOutlined,
   SettingOutlined,
+  StopOutlined,
   WalletOutlined,
   WechatFilled
 } from "@ant-design/icons";
@@ -75,17 +76,21 @@ import {
   createDeviceEnrollment,
   createPaymentAccount,
   createQrGenerationTask,
+  deleteDevice,
   deleteQrCode,
+  deleteQrGenerationTask,
   getAdminSession,
   getPaymentPage,
   loadSnapshot,
   loginAdmin,
   logoutAdmin,
   retryCallback,
+  retryQrGenerationTask,
   setDeviceEnabled,
   setPaymentAccountEnabled,
   setQrCodeChecked,
   setupAdmin,
+  stopQrGenerationTask,
   unbindDevicePaymentAccount,
   updateOrderStatus,
   updatePaymentAccountSettings,
@@ -102,11 +107,26 @@ type ViewKey =
   | "devices"
   | "amountOccupations"
   | "qrCodes"
+  | "qrTasks"
   | "notificationLogs"
   | "systemLogs"
   | "callbacks"
   | "paymentSettings";
 type Columns<T> = NonNullable<TableProps<T>["columns"]>;
+interface QrCodeAmountGroup {
+  key: string;
+  paymentAccountId: number;
+  paymentAccountCode: string;
+  paymentAccountName: string;
+  paymentChannel: PaymentChannel;
+  baseAmount: string;
+  total: number;
+  checkedCount: number;
+  uncheckedCount: number;
+  amounts: string[];
+  updatedAt: string;
+  items: PresetQrCode[];
+}
 
 const { Header, Sider, Content } = Layout;
 const { Text, Title } = Typography;
@@ -140,6 +160,7 @@ const menuItems: MenuProps["items"] = [
   { key: "devices", icon: <MobileOutlined />, label: "安卓设备" },
   { key: "amountOccupations", icon: <ClockCircleOutlined />, label: "金额占用" },
   { key: "qrCodes", icon: <QrcodeOutlined />, label: "定额二维码" },
+  { key: "qrTasks", icon: <CloudSyncOutlined />, label: "自动生成任务" },
   { key: "notificationLogs", icon: <BellOutlined />, label: "通知日志" },
   { key: "systemLogs", icon: <FileSearchOutlined />, label: "系统日志" },
   { key: "callbacks", icon: <CloudSyncOutlined />, label: "回调管理" },
@@ -154,6 +175,7 @@ const viewKeys = new Set<ViewKey>([
   "devices",
   "amountOccupations",
   "qrCodes",
+  "qrTasks",
   "notificationLogs",
   "systemLogs",
   "callbacks",
@@ -172,6 +194,7 @@ const viewTitles: Record<ViewKey, string> = {
   devices: "安卓设备",
   amountOccupations: "金额占用",
   qrCodes: "定额二维码",
+  qrTasks: "自动生成任务",
   notificationLogs: "通知日志",
   systemLogs: "系统日志",
   callbacks: "回调管理",
@@ -348,6 +371,53 @@ async function validateNotificationTemplates(_: unknown, value: unknown) {
 
 function templateLines(value: string[]) {
   return value.join("\n");
+}
+
+function groupPresetQrCodes(items: PresetQrCode[]): QrCodeAmountGroup[] {
+  const groups = new Map<string, QrCodeAmountGroup>();
+  for (const item of items) {
+    const baseAmountCents = Math.floor(item.amountCents / 100) * 100;
+    const baseAmount = (baseAmountCents / 100).toFixed(2);
+    const key = `${item.paymentAccountId}:${baseAmountCents}`;
+    const current = groups.get(key);
+    if (current) {
+      current.items.push(item);
+      current.total += 1;
+      current.checkedCount += item.checked ? 1 : 0;
+      current.uncheckedCount += item.checked ? 0 : 1;
+      current.amounts.push(item.amount);
+      current.updatedAt = current.updatedAt > item.updatedAt ? current.updatedAt : item.updatedAt;
+      continue;
+    }
+
+    groups.set(key, {
+      key,
+      paymentAccountId: item.paymentAccountId,
+      paymentAccountCode: item.paymentAccountCode,
+      paymentAccountName: item.paymentAccountName,
+      paymentChannel: item.paymentChannel,
+      baseAmount,
+      total: 1,
+      checkedCount: item.checked ? 1 : 0,
+      uncheckedCount: item.checked ? 0 : 1,
+      amounts: [item.amount],
+      updatedAt: item.updatedAt,
+      items: [item]
+    });
+  }
+
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      amounts: [...group.amounts].sort((left, right) => Number(left) - Number(right)),
+      items: [...group.items].sort((left, right) => left.amountCents - right.amountCents)
+    }))
+    .sort((left, right) => {
+      if (left.paymentAccountCode !== right.paymentAccountCode) {
+        return left.paymentAccountCode.localeCompare(right.paymentAccountCode);
+      }
+      return Number(left.baseAmount) - Number(right.baseAmount);
+    });
 }
 
 function isViewKey(value: unknown): value is ViewKey {
@@ -1265,6 +1335,36 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     }
   }, [message, refresh]);
 
+  const handleStopQrTask = useCallback(async (id: number) => {
+    try {
+      await stopQrGenerationTask(id);
+      message.success("任务已停止");
+      refresh();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "任务停止失败");
+    }
+  }, [message, refresh]);
+
+  const handleRetryQrTask = useCallback(async (id: number) => {
+    try {
+      await retryQrGenerationTask(id);
+      message.success("任务已重新排队");
+      refresh();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "任务重试失败");
+    }
+  }, [message, refresh]);
+
+  const handleDeleteQrTask = useCallback(async (id: number) => {
+    try {
+      await deleteQrGenerationTask(id);
+      message.success("任务已删除");
+      refresh();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "任务删除失败");
+    }
+  }, [message, refresh]);
+
   const handleCopyPayUrl = useCallback(async (value: string) => {
     try {
       await copyText(value);
@@ -1319,6 +1419,16 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
       refresh();
     } catch (error) {
       message.error(error instanceof Error ? error.message : "绑定解除失败");
+    }
+  }, [message, refresh]);
+
+  const handleDeleteDevice = useCallback(async (id: number) => {
+    try {
+      await deleteDevice(id);
+      message.success("设备已删除");
+      refresh();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "设备删除失败");
     }
   }, [message, refresh]);
 
@@ -1379,8 +1489,42 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
       render: (value: string) => <Tag color={statusColor[value] ?? "default"}>{qrTaskStatusText[value] ?? value}</Tag>
     },
     { title: "错误", dataIndex: "lastError", ellipsis: true, responsive: ["lg"], render: (value) => value || "-" },
-    { title: "创建时间", dataIndex: "createdAt", width: 190, responsive: ["md"], render: formatDate }
-  ], []);
+    { title: "创建时间", dataIndex: "createdAt", width: 190, responsive: ["md"], render: formatDate },
+    {
+      title: "操作",
+      key: "actions",
+      width: 150,
+      render: (_, record) => (
+        <Space size="small">
+          <Tooltip title="停止任务">
+            <Button
+              size="small"
+              danger
+              icon={<StopOutlined />}
+              disabled={!["pending", "running"].includes(record.status)}
+              onClick={() => handleStopQrTask(record.id)}
+            />
+          </Tooltip>
+          <Tooltip title="重试失败任务">
+            <Button size="small" icon={<ReloadOutlined />} disabled={record.status !== "failed"} onClick={() => handleRetryQrTask(record.id)} />
+          </Tooltip>
+          <Popconfirm
+            title="删除生成任务？"
+            description="任务明细会一起删除，已写入的定额二维码不会被删除。"
+            okText="删除"
+            okButtonProps={{ danger: true }}
+            cancelText="取消"
+            disabled={record.status === "running"}
+            onConfirm={() => handleDeleteQrTask(record.id)}
+          >
+            <Tooltip title={record.status === "running" ? "执行中任务需先停止" : "删除任务"}>
+              <Button size="small" danger icon={<DeleteOutlined />} disabled={record.status === "running"} />
+            </Tooltip>
+          </Popconfirm>
+        </Space>
+      )
+    }
+  ], [handleDeleteQrTask, handleRetryQrTask, handleStopQrTask]);
 
   const qrColumns = useMemo<Columns<PresetQrCode>>(() => [
     { title: "收款账号", dataIndex: "paymentAccountCode", width: 120, responsive: ["sm"], render: (value) => value || "-" },
@@ -1432,6 +1576,23 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
       )
     }
   ], [handleCopyPayUrl, handleDeleteQr, handleQrCheckedToggle]);
+
+  const qrCodeGroups = useMemo(() => groupPresetQrCodes(snapshot.qrCodes.items), [snapshot.qrCodes.items]);
+
+  const qrGroupColumns = useMemo<Columns<QrCodeAmountGroup>>(() => [
+    { title: "整数金额", dataIndex: "baseAmount", width: 120, render: (value) => `${Number(value).toFixed(0)} 元` },
+    { title: "收款账号", dataIndex: "paymentAccountCode", width: 140, responsive: ["sm"], render: (value, record) => `${record.paymentAccountName} (${value})` },
+    { title: "方式", dataIndex: "paymentChannel", width: 90, responsive: ["sm"], render: (value) => <PaymentChannelTag value={value} /> },
+    { title: "数量", dataIndex: "total", width: 90, render: (value) => `${value} 个` },
+    { title: "已检查", dataIndex: "checkedCount", width: 110, render: (value, record) => `${value}/${record.total}` },
+    {
+      title: "金额范围",
+      dataIndex: "amounts",
+      ellipsis: true,
+      render: (value: string[]) => value.join(", ")
+    },
+    { title: "更新时间", dataIndex: "updatedAt", width: 190, responsive: ["md"], render: formatDate }
+  ], []);
 
   const paymentAccountColumns = useMemo<Columns<PaymentAccount>>(() => [
     { title: "编码", dataIndex: "code", width: 140 },
@@ -1491,8 +1652,29 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     { title: "版本", dataIndex: "appVersion", width: 110, responsive: ["md"], render: (value) => value || "-" },
     { title: "配对时间", dataIndex: "pairedAt", width: 190, responsive: ["lg"], render: formatDate },
     { title: "最后心跳", dataIndex: "lastSeenAt", width: 190, responsive: ["lg"], render: formatDate },
-    { title: "启用", key: "enabled", width: 90, render: (_, record) => <Switch checked={record.enabled} onChange={(checked) => handleDeviceToggle(record.id, checked)} /> }
-  ], [handleDevicePaymentAccountUnbind, handleDeviceToggle]);
+    {
+      title: "操作",
+      key: "actions",
+      width: 130,
+      render: (_, record) => (
+        <Space size="small">
+          <Switch checked={record.enabled} onChange={(checked) => handleDeviceToggle(record.id, checked)} />
+          <Popconfirm
+            title="删除安卓设备？"
+            description="会解除账号绑定，正在执行的自动任务会被释放。"
+            okText="删除"
+            okButtonProps={{ danger: true }}
+            cancelText="取消"
+            onConfirm={() => handleDeleteDevice(record.id)}
+          >
+            <Tooltip title="删除设备">
+              <Button size="small" danger icon={<DeleteOutlined />} />
+            </Tooltip>
+          </Popconfirm>
+        </Space>
+      )
+    }
+  ], [handleDeleteDevice, handleDevicePaymentAccountUnbind, handleDeviceToggle]);
 
   const notificationColumns = useMemo<Columns<NotificationLog>>(() => [
     { title: "时间", dataIndex: "receivedAt", width: 190, render: formatDate },
@@ -1602,12 +1784,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
           <PageHeading
             title="定额二维码"
             description="导入具体账号下的固定金额收款码。创建订单时只会使用已检查的定额码。"
-            actions={(
-              <Space wrap>
-                <Button icon={<QrcodeOutlined />} onClick={() => setQrTaskOpen(true)}>自动生成</Button>
-                <Button type="primary" icon={<PlusOutlined />} onClick={() => setQrOpen(true)}>导入二维码</Button>
-              </Space>
-            )}
+            actions={<Button type="primary" icon={<PlusOutlined />} onClick={() => setQrOpen(true)}>导入二维码</Button>}
           />
           <Alert
             showIcon
@@ -1616,13 +1793,41 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
             description="新导入或付款 URL 变化后的定额码默认是未检查。确认二维码能打开、金额正确后，再切换为已检查。"
           />
           <section className="panel">
-            <div className="panel-title">
-              <Title level={4}>自动生成任务</Title>
-            </div>
-            <Table<PresetQrGenerationTask> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.qrGenerationTasks.items} columns={qrTaskColumns} scroll={{ x: 1120 }} pagination={{ total: snapshot.qrGenerationTasks.total, pageSize: snapshot.qrGenerationTasks.limit, showSizeChanger: false }} />
+            <Table<QrCodeAmountGroup>
+              size="small"
+              rowKey="key"
+              loading={loading || isPending}
+              dataSource={qrCodeGroups}
+              columns={qrGroupColumns}
+              scroll={{ x: 930 }}
+              pagination={{ total: qrCodeGroups.length, pageSize: 20, showSizeChanger: false }}
+              expandable={{
+                expandedRowRender: (record) => (
+                  <Table<PresetQrCode>
+                    size="small"
+                    rowKey="id"
+                    dataSource={record.items}
+                    columns={qrColumns}
+                    scroll={{ x: 1210 }}
+                    pagination={false}
+                  />
+                )
+              }}
+            />
           </section>
+        </div>
+      );
+    }
+    if (activeView === "qrTasks") {
+      return (
+        <div className="view-stack">
+          <PageHeading
+            title="自动生成任务"
+            description="后台创建金额任务后，安卓端通过长连接接收任务、执行生成并实时回报状态。"
+            actions={<Button type="primary" icon={<QrcodeOutlined />} onClick={() => setQrTaskOpen(true)}>创建任务</Button>}
+          />
           <section className="panel">
-            <Table<PresetQrCode> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.qrCodes.items} columns={qrColumns} scroll={{ x: 1210 }} pagination={{ total: snapshot.qrCodes.total, pageSize: snapshot.qrCodes.limit, showSizeChanger: false }} />
+            <Table<PresetQrGenerationTask> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.qrGenerationTasks.items} columns={qrTaskColumns} scroll={{ x: 1280 }} pagination={{ total: snapshot.qrGenerationTasks.total, pageSize: snapshot.qrGenerationTasks.limit, showSizeChanger: false }} />
           </section>
         </div>
       );
@@ -1705,7 +1910,9 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     occupationColumns,
     orderColumns,
     paymentAccountColumns,
+    qrCodeGroups,
     qrColumns,
+    qrGroupColumns,
     qrTaskColumns,
     snapshot,
     systemLogColumns

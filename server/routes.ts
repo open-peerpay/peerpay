@@ -46,7 +46,7 @@ import {
   requireAdmin,
   setupAdminPassword
 } from "./auth";
-import { createEasyPayRoutes } from "./easypay";
+import { createEasyPayRoutes, dispatchEasyPayNotification, listEasyPayCallbackLogs } from "./easypay";
 import { boolFromBody, corsHeaders, json, pageOptions, parseJsonText, readJson, withErrors } from "./http";
 import type {
   AndroidTaskStreamEvent,
@@ -60,7 +60,10 @@ import type {
   EnrollDeviceInput,
   HeartbeatInput,
   Order,
-  OrderStatus
+  OrderStatus,
+  CallbackLog,
+  CallbackType,
+  Page
 } from "../src/shared/types";
 
 type RouteRequest<T extends Record<string, string> = Record<string, string>> = Request & {
@@ -86,6 +89,27 @@ function publicOrder(req: Request, order: Order) {
   return {
     ...order,
     payUrl: publicUrl(req, paymentPagePath(order.id))
+  };
+}
+
+function listCombinedCallbackLogs(
+  ctx: AppContext,
+  options: { status?: string; limit?: number; offset?: number }
+): Page<CallbackLog> {
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
+  const offset = Math.max(options.offset ?? 0, 0);
+  const fetchSize = limit + offset;
+  const peerpay = listCallbackLogs(ctx, { status: options.status, limit: fetchSize, offset: 0 });
+  const easypay = listEasyPayCallbackLogs(ctx, { status: options.status, limit: fetchSize, offset: 0 });
+  const items = [...peerpay.items, ...easypay.items]
+    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
+    .slice(offset, offset + limit);
+
+  return {
+    items,
+    total: peerpay.total + easypay.total,
+    limit,
+    offset
   };
 }
 
@@ -419,14 +443,19 @@ export function createApiRoutes(ctx: AppContext) {
     "/api/callbacks": {
       GET: (req: Request) => withErrors(() => admin(ctx, req, () => {
         const url = new URL(req.url);
-        return json(listCallbackLogs(ctx, {
+        return json(listCombinedCallbackLogs(ctx, {
           ...pageOptions(url),
           status: url.searchParams.get("status") ?? undefined
         }));
       }))
     },
     "/api/callbacks/:id/retry": {
-      POST: (req: RouteRequest<{ id: string }>) => withErrors(async () => admin(ctx, req, async () => json(await dispatchCallback(ctx, Number(req.params.id)))))
+      POST: (req: RouteRequest<{ id: string }>) => withErrors(async () => admin(ctx, req, async () => {
+        const body = await readJson<{ type?: CallbackType }>(req);
+        return json(body.type === "easypay"
+          ? await dispatchEasyPayNotification(ctx, Number(req.params.id))
+          : await dispatchCallback(ctx, Number(req.params.id)));
+      }))
     },
     "/api/*": {
       OPTIONS: () => new Response(null, { status: 204, headers: corsHeaders })

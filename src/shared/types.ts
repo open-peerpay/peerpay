@@ -2,6 +2,7 @@ export type OrderStatus = "pending" | "paid" | "notified" | "expired";
 export type LogLevel = "info" | "warn" | "error";
 export type MatchStatus = "matched" | "unmatched" | "parse_failed";
 export type CallbackStatus = "pending" | "success" | "failed";
+export type CallbackType = "peerpay" | "easypay";
 export type PayMode = "preset" | "fallback";
 export type PaymentChannel = "wechat" | "alipay";
 export type PresetQrGenerationTaskStatus = "pending" | "running" | "completed" | "failed" | "canceled";
@@ -206,6 +207,7 @@ export interface NotificationLog {
 
 export interface CallbackLog {
   id: number;
+  type: CallbackType;
   orderId: string;
   url: string;
   status: CallbackStatus;

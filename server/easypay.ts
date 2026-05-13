@@ -10,7 +10,7 @@ import {
   type AppContext
 } from "./services";
 import { formatMoney, parseMoney } from "./money";
-import type { Order, PaymentChannel } from "../src/shared/types";
+import type { CallbackLog, Order, Page, PaymentChannel } from "../src/shared/types";
 
 type EasyPayType = "alipay" | "wxpay";
 type EasyPayNotifyStatus = "pending" | "success" | "failed";
@@ -366,6 +366,51 @@ export function queueEasyPayNotification(ctx: AppContext, order: Order) {
 
 export function getEasyPayNotifyLog(ctx: AppContext, id: number) {
   return ctx.db.query("SELECT * FROM easypay_notify_logs WHERE id = ?").get(id) as EasyPayNotifyRow | null;
+}
+
+export function listEasyPayCallbackLogs(
+  ctx: AppContext,
+  options: { status?: string; limit?: number; offset?: number } = {}
+): Page<CallbackLog> {
+  const params: Array<string | number> = [];
+  const status = options.status;
+  const where = status && ["pending", "success", "failed"].includes(status)
+    ? "WHERE status = ?"
+    : "";
+  if (where) {
+    params.push(status as string);
+  }
+
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
+  const offset = Math.max(options.offset ?? 0, 0);
+  const rows = ctx.db.query(`
+    SELECT *
+    FROM easypay_notify_logs
+    ${where}
+    ORDER BY created_at DESC
+    LIMIT ? OFFSET ?
+  `).all(...params, limit, offset) as EasyPayNotifyRow[];
+  const total = (ctx.db.query(`SELECT COUNT(*) AS value FROM easypay_notify_logs ${where}`)
+    .get(...params) as { value: number } | null)?.value ?? 0;
+
+  return { items: rows.map(mapEasyPayCallbackLog), total, limit, offset };
+}
+
+function mapEasyPayCallbackLog(row: EasyPayNotifyRow): CallbackLog {
+  return {
+    id: row.id,
+    type: "easypay",
+    orderId: row.order_id,
+    url: row.url,
+    status: row.status,
+    httpStatus: row.http_status,
+    attempts: row.attempts,
+    nextRetryAt: row.next_retry_at,
+    error: row.error,
+    responseBody: row.response_body,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
 }
 
 export async function dispatchEasyPayNotification(ctx: AppContext, id: number) {

@@ -50,6 +50,7 @@ import {
 import type {
   AmountOccupation,
   CallbackLog,
+  CallbackType,
   Device,
   DeviceEnrollment,
   NotificationLog,
@@ -1384,9 +1385,9 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     setMobileMenuOpen(false);
   }, []);
 
-  const handleRetryCallback = useCallback(async (id: number) => {
+  const handleRetryCallback = useCallback(async (id: number, type: CallbackType) => {
     try {
-      await retryCallback(id);
+      await retryCallback(id, type);
       message.success("回调已重发");
       refresh();
     } catch (error) {
@@ -1696,6 +1697,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
   ], []);
 
   const callbackColumns = useMemo<Columns<CallbackLog>>(() => [
+    { title: "类型", dataIndex: "type", width: 100, render: (value) => <Tag color={value === "easypay" ? "purple" : "blue"}>{value === "easypay" ? "EasyPay" : "PeerPay"}</Tag> },
     { title: "订单号", dataIndex: "orderId", width: 220, ellipsis: true },
     { title: "状态", dataIndex: "status", width: 110, render: (value) => <StatusTag value={String(value)} /> },
     { title: "次数", dataIndex: "attempts", width: 80, responsive: ["sm"] },
@@ -1704,7 +1706,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
     { title: "地址", dataIndex: "url", ellipsis: true, responsive: ["md"] },
     { title: "操作", key: "actions", width: 90, render: (_, record) => (
       <Tooltip title="重发">
-        <Button size="small" icon={<SendOutlined />} disabled={record.status === "success"} onClick={() => handleRetryCallback(record.id)} />
+        <Button size="small" icon={<SendOutlined />} disabled={record.status === "success"} onClick={() => handleRetryCallback(record.id, record.type)} />
       </Tooltip>
     ) }
   ], [handleRetryCallback]);
@@ -1866,7 +1868,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
             description="查看商户回调投递状态。失败回调可在表格行内重发，不需要单独创建。"
           />
           <section className="panel">
-            <Table<CallbackLog> size="small" rowKey="id" loading={loading || isPending} dataSource={snapshot.callbacks.items} columns={callbackColumns} scroll={{ x: 1120 }} pagination={{ total: snapshot.callbacks.total, pageSize: snapshot.callbacks.limit, showSizeChanger: false }} />
+            <Table<CallbackLog> size="small" rowKey={(record) => `${record.type}:${record.id}`} loading={loading || isPending} dataSource={snapshot.callbacks.items} columns={callbackColumns} scroll={{ x: 1220 }} pagination={{ total: snapshot.callbacks.total, pageSize: snapshot.callbacks.limit, showSizeChanger: false }} />
           </section>
         </div>
       );

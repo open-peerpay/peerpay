@@ -498,6 +498,7 @@ function mapNotification(row: NotificationRow): NotificationLog {
 function mapCallback(row: CallbackRow): CallbackLog {
   return {
     id: row.id,
+    type: "peerpay",
     orderId: row.order_id,
     url: row.url,
     status: row.status,
@@ -2714,8 +2715,10 @@ export function dashboardStats(ctx: AppContext): DashboardStats {
       fallbackAccounts: scalar(ctx, "SELECT COUNT(*) AS value FROM payment_accounts WHERE enabled = 1 AND fallback_pay_url IS NOT NULL AND fallback_pay_url != ''")
     },
     callbacks: {
-      pending: scalar(ctx, "SELECT COUNT(*) AS value FROM callback_logs WHERE status = 'pending'"),
+      pending: scalar(ctx, "SELECT COUNT(*) AS value FROM callback_logs WHERE status = 'pending'")
+        + scalar(ctx, "SELECT COUNT(*) AS value FROM easypay_notify_logs WHERE status = 'pending'"),
       failed: scalar(ctx, "SELECT COUNT(*) AS value FROM callback_logs WHERE status = 'failed'")
+        + scalar(ctx, "SELECT COUNT(*) AS value FROM easypay_notify_logs WHERE status = 'failed'")
     }
   };
 }

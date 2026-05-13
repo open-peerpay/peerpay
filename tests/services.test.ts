@@ -833,6 +833,73 @@ test("EasyPay paid notifications use GET success semantics and do not create Pee
   expect(updatedNotifyLog.status).toBe("success");
 });
 
+test("callback management combines PeerPay and EasyPay callback logs", async () => {
+  const routes = createApiRoutes(ctx);
+  await setupAdminPassword(ctx, "strong-password");
+  const cookie = await loginAdmin(ctx, "strong-password");
+  const peerPayOrder = createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "21.50",
+    merchantOrderId: "peerpay-callback-list",
+    callbackUrl: "https://merchant.example/peerpay-callback",
+    callbackSecret: "secret"
+  });
+  updateOrderStatus(ctx, peerPayOrder.id, "paid");
+
+  const params = signedEasyPayParams({
+    type: "alipay",
+    out_trade_no: "epay-callback-list",
+    notify_url: "https://merchant.example/easypay-callback",
+    name: "回调列表订单",
+    money: "22.00"
+  });
+  const createResponse = await routes["/mapi.php"].POST(new Request("https://peerpay.test/mapi.php", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: easyPayBody(params)
+  }));
+  const createPayload = await createResponse.json() as { trade_no: string };
+  updateOrderStatus(ctx, createPayload.trade_no, "paid");
+
+  const callbacksResponse = await routes["/api/callbacks"].GET(new Request("https://peerpay.test/api/callbacks?limit=80", {
+    headers: { cookie }
+  }));
+  const callbacksPayload = await callbacksResponse.json() as { data: { items: Array<{ id: number; type: string; orderId: string }>; total: number } };
+  const dashboardResponse = await routes["/api/dashboard"].GET(new Request("https://peerpay.test/api/dashboard", {
+    headers: { cookie }
+  }));
+  const dashboardPayload = await dashboardResponse.json() as { data: { callbacks: { pending: number } } };
+
+  expect(callbacksPayload.data.total).toBe(2);
+  expect(callbacksPayload.data.items.map((item) => item.type).sort()).toEqual(["easypay", "peerpay"]);
+  expect(dashboardPayload.data.callbacks.pending).toBe(2);
+
+  const easyPayLog = callbacksPayload.data.items.find((item) => item.type === "easypay");
+  if (!easyPayLog) {
+    throw new Error("missing EasyPay callback log");
+  }
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("success")) as unknown as typeof fetch;
+  try {
+    const retryResponse = await routes["/api/callbacks/:id/retry"].POST(Object.assign(
+      new Request(`https://peerpay.test/api/callbacks/${easyPayLog.id}/retry`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie
+        },
+        body: JSON.stringify({ type: "easypay" })
+      }),
+      { params: { id: String(easyPayLog.id) } }
+    ));
+    const retryPayload = await retryResponse.json() as { data: { status: string } };
+    expect(retryPayload.data.status).toBe("success");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("preset qr code checked api toggles the flag", async () => {
   upsertPresetQrCodes(ctx, {
     paymentAccountCode: "alipay-a",

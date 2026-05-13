@@ -18,6 +18,7 @@ import type {
   PresetQrGenerationTask,
   PresetQrCode,
   SystemLog,
+  CallbackType,
   UpdatePaymentAccountInput,
   UpdatePaymentPageSettingsInput
 } from "../shared/types";
@@ -176,6 +177,6 @@ export function setQrCodeChecked(id: number, checked: boolean) {
   return request<PresetQrCode>(`/api/preset-qrcodes/${id}/checked`, { method: "POST", body: JSON.stringify({ checked }) });
 }
 
-export function retryCallback(id: number) {
-  return request<CallbackLog>(`/api/callbacks/${id}/retry`, { method: "POST" });
+export function retryCallback(id: number, type: CallbackType = "peerpay") {
+  return request<CallbackLog>(`/api/callbacks/${id}/retry`, { method: "POST", body: JSON.stringify({ type }) });
 }

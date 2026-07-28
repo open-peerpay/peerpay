@@ -54,6 +54,7 @@ import type {
   CallbackType,
   Device,
   DeviceEnrollment,
+  NotificationSettings,
   NotificationLog,
   Order,
   OrderStatus,
@@ -97,6 +98,7 @@ import {
   stopQrGenerationTask,
   unbindDevicePaymentAccount,
   updateOrderStatus,
+  updateNotificationSettings,
   updatePaymentAccountSettings,
   updatePaymentPageSettings,
   upsertQrCodes,
@@ -115,6 +117,7 @@ type ViewKey =
   | "notificationLogs"
   | "systemLogs"
   | "callbacks"
+  | "notificationSettings"
   | "paymentSettings";
 type Columns<T> = NonNullable<TableProps<T>["columns"]>;
 interface QrCodeAmountGroup {
@@ -145,6 +148,7 @@ const emptySnapshot: Snapshot = {
     amountPool: { occupied: 0, presetQrCodes: 0, fallbackAccounts: 0 },
     callbacks: { pending: 0, failed: 0 }
   },
+  notificationSettings: { feishuEnabled: false, feishuWebhookUrl: null },
   paymentPageSettings: { noticeEnabled: false, noticeTitle: "", noticeBody: "", noticeLinkText: "", noticeLinkUrl: null },
   paymentAccounts: [],
   orders: { items: [], total: 0, limit: 80, offset: 0 },
@@ -168,6 +172,7 @@ const menuItems: MenuProps["items"] = [
   { key: "notificationLogs", icon: <BellOutlined />, label: "通知日志" },
   { key: "systemLogs", icon: <FileSearchOutlined />, label: "系统日志" },
   { key: "callbacks", icon: <CloudSyncOutlined />, label: "回调管理" },
+  { key: "notificationSettings", icon: <SendOutlined />, label: "通知设置" },
   { key: "paymentSettings", icon: <SettingOutlined />, label: "付款页设置" }
 ];
 
@@ -183,6 +188,7 @@ const viewKeys = new Set<ViewKey>([
   "notificationLogs",
   "systemLogs",
   "callbacks",
+  "notificationSettings",
   "paymentSettings"
 ]);
 const legacyViewKeys: Record<string, ViewKey> = {
@@ -202,6 +208,7 @@ const viewTitles: Record<ViewKey, string> = {
   notificationLogs: "通知日志",
   systemLogs: "系统日志",
   callbacks: "回调管理",
+  notificationSettings: "通知设置",
   paymentSettings: "付款页设置"
 };
 
@@ -1217,6 +1224,70 @@ function PaymentPageSettingsModal({ settings, open, onCancel, onRefresh }: Payme
   );
 }
 
+interface NotificationSettingsModalProps {
+  settings: NotificationSettings;
+  open: boolean;
+  onCancel: () => void;
+  onRefresh: () => void;
+}
+
+function NotificationSettingsModal({ settings, open, onCancel, onRefresh }: NotificationSettingsModalProps) {
+  const [form] = Form.useForm<NotificationSettings>();
+  const { message } = AntApp.useApp();
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      form.setFieldsValue(settings);
+    }
+  }, [form, open, settings]);
+
+  const handleFinish = useCallback(async (values: NotificationSettings) => {
+    setSaving(true);
+    try {
+      await updateNotificationSettings({
+        feishuEnabled: values.feishuEnabled,
+        feishuWebhookUrl: values.feishuWebhookUrl || null
+      });
+      message.success("通知配置已更新");
+      onCancel();
+      onRefresh();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "通知配置更新失败");
+    } finally {
+      setSaving(false);
+    }
+  }, [message, onCancel, onRefresh]);
+
+  return (
+    <Modal title="通知配置" open={open} confirmLoading={saving} destroyOnHidden okText="保存" cancelText="取消" onOk={form.submit} onCancel={onCancel}>
+      <Form form={form} layout="vertical" onFinish={handleFinish}>
+        <Form.Item name="feishuEnabled" label="飞书通知" valuePropName="checked">
+          <Switch checkedChildren="开" unCheckedChildren="关" />
+        </Form.Item>
+        <Form.Item
+          name="feishuWebhookUrl"
+          label="飞书 Webhook"
+          dependencies={["feishuEnabled"]}
+          rules={[
+            { type: "url", message: "请输入有效的 Webhook 地址" },
+            ({ getFieldValue }) => ({
+              validator(_, value) {
+                if (!getFieldValue("feishuEnabled") || String(value ?? "").trim()) {
+                  return Promise.resolve();
+                }
+                return Promise.reject(new Error("启用飞书通知时必须填写 Webhook 地址"));
+              }
+            })
+          ]}
+        >
+          <Input.Password allowClear visibilityToggle placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." />
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+}
+
 interface PageHeadingProps {
   title: string;
   description: string;
@@ -1298,6 +1369,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
   const [previewQrCode, setPreviewQrCode] = useState<PresetQrCode | null>(null);
   const [deviceEnrollOpen, setDeviceEnrollOpen] = useState(false);
   const [paymentAccountOpen, setPaymentAccountOpen] = useState(false);
+  const [notificationSettingsOpen, setNotificationSettingsOpen] = useState(false);
   const [paymentPageSettingsOpen, setPaymentPageSettingsOpen] = useState(false);
   const [settingsPaymentAccount, setSettingsPaymentAccount] = useState<PaymentAccount | null>(null);
 
@@ -1913,6 +1985,30 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
         </div>
       );
     }
+    if (activeView === "notificationSettings") {
+      const settings = snapshot.notificationSettings;
+      return (
+        <div className="view-stack">
+          <PageHeading
+            title="通知设置"
+            description="配置订单创建和支付成功时发送的飞书群机器人通知。"
+            actions={<Button type="primary" icon={<SettingOutlined />} onClick={() => setNotificationSettingsOpen(true)}>编辑通知</Button>}
+          />
+          <section className="settings-grid">
+            <div className="setting-cell">
+              <Text type="secondary">飞书通知</Text>
+              <strong>{settings.feishuEnabled ? "已开启" : "未开启"}</strong>
+              <Tag color={settings.feishuEnabled ? "success" : "default"}>{settings.feishuEnabled ? "运行中" : "已停用"}</Tag>
+            </div>
+            <div className="setting-cell setting-cell-wide">
+              <Text type="secondary">Webhook</Text>
+              <strong>{settings.feishuWebhookUrl ? "已配置" : "未配置"}</strong>
+              <Text type="secondary">{settings.feishuWebhookUrl ? new URL(settings.feishuWebhookUrl).host : "-"}</Text>
+            </div>
+          </section>
+        </div>
+      );
+    }
     const settings = snapshot.paymentPageSettings;
     return (
       <div className="view-stack">
@@ -2012,6 +2108,7 @@ function PeerPayShell({ onLoggedOut }: { onLoggedOut: () => void }) {
       <DeviceEnrollmentModal paymentAccounts={snapshot.paymentAccounts} open={deviceEnrollOpen} onCancel={() => setDeviceEnrollOpen(false)} onRefresh={refresh} />
       <PaymentAccountModal open={paymentAccountOpen} onCancel={() => setPaymentAccountOpen(false)} onRefresh={refresh} />
       <PaymentAccountSettingsModal account={settingsPaymentAccount} open={Boolean(settingsPaymentAccount)} onCancel={() => setSettingsPaymentAccount(null)} onRefresh={refresh} />
+      <NotificationSettingsModal settings={snapshot.notificationSettings} open={notificationSettingsOpen} onCancel={() => setNotificationSettingsOpen(false)} onRefresh={refresh} />
       <PaymentPageSettingsModal settings={snapshot.paymentPageSettings} open={paymentPageSettingsOpen} onCancel={() => setPaymentPageSettingsOpen(false)} onRefresh={refresh} />
       <Modal title="查看二维码" open={Boolean(previewQrCode)} footer={null} destroyOnHidden onCancel={() => setPreviewQrCode(null)}>
         {previewQrCode ? (

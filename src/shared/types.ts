@@ -143,6 +143,11 @@ export interface PaymentPageSettings {
   noticeLinkUrl: string | null;
 }
 
+export interface NotificationSettings {
+  feishuEnabled: boolean;
+  feishuWebhookUrl: string | null;
+}
+
 export interface PaymentPageNotice {
   title: string;
   body: string;
@@ -349,6 +354,7 @@ export interface UpdatePaymentAccountInput {
 }
 
 export type UpdatePaymentPageSettingsInput = Partial<PaymentPageSettings>;
+export type UpdateNotificationSettingsInput = Partial<NotificationSettings>;
 
 export interface UpsertPresetQrCodeInput {
   paymentAccountId?: number;

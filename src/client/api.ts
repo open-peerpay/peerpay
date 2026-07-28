@@ -8,6 +8,7 @@ import type {
   DashboardStats,
   Device,
   DeviceEnrollment,
+  NotificationSettings,
   NotificationLog,
   Order,
   OrderStatus,
@@ -20,6 +21,7 @@ import type {
   SystemLog,
   CallbackType,
   UpdatePaymentAccountInput,
+  UpdateNotificationSettingsInput,
   UpdatePaymentPageSettingsInput
 } from "../shared/types";
 
@@ -60,6 +62,7 @@ async function request<T>(path: string, init: RequestInit = {}) {
 export function loadSnapshot() {
   return Promise.all([
     request<DashboardStats>("/api/dashboard"),
+    request<NotificationSettings>("/api/settings/notifications"),
     request<PaymentPageSettings>("/api/settings/payment-page"),
     request<PaymentAccount[]>("/api/payment-accounts"),
     request<Page<Order>>("/api/orders?limit=80"),
@@ -70,8 +73,9 @@ export function loadSnapshot() {
     request<Page<NotificationLog>>("/api/logs/notifications?limit=80"),
     request<Page<SystemLog>>("/api/logs/system?limit=80"),
     request<Page<CallbackLog>>("/api/callbacks?limit=80")
-  ]).then(([dashboard, paymentPageSettings, paymentAccounts, orders, occupations, qrCodes, qrGenerationTasks, devices, notifications, systemLogs, callbacks]) => ({
+  ]).then(([dashboard, notificationSettings, paymentPageSettings, paymentAccounts, orders, occupations, qrCodes, qrGenerationTasks, devices, notifications, systemLogs, callbacks]) => ({
     dashboard,
+    notificationSettings,
     paymentPageSettings,
     paymentAccounts,
     orders,
@@ -151,6 +155,10 @@ export function updatePaymentAccountSettings(id: number, input: UpdatePaymentAcc
 
 export function updatePaymentPageSettings(input: UpdatePaymentPageSettingsInput) {
   return request<PaymentPageSettings>("/api/settings/payment-page", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function updateNotificationSettings(input: UpdateNotificationSettingsInput) {
+  return request<NotificationSettings>("/api/settings/notifications", { method: "POST", body: JSON.stringify(input) });
 }
 
 export function getPaymentPage(orderId: string) {

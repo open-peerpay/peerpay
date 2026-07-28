@@ -1,6 +1,11 @@
 import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createDatabase } from "./db";
+import {
+  sendFeishuOrderCreatedNotification,
+  sendFeishuOrderPaidNotification,
+  type FeishuWebhookFetch
+} from "./feishu";
 import { extractMoneyByTemplates, formatMoney, parseMoney } from "./money";
 import {
   DEFAULT_MAX_OFFSET_CENTS,
@@ -31,6 +36,7 @@ import type {
   HeartbeatInput,
   LogLevel,
   MatchStatus,
+  NotificationSettings,
   NotificationLog,
   Order,
   OrderStatus,
@@ -48,6 +54,7 @@ import type {
   PresetQrCode,
   SystemLog,
   UpdatePaymentAccountInput,
+  UpdateNotificationSettingsInput,
   UpdatePaymentPageSettingsInput
 } from "../src/shared/types";
 
@@ -62,6 +69,7 @@ const QR_GENERATION_ASSIGNMENT_BATCH_SIZE = 10;
 const QR_GENERATION_ASSIGNMENT_TIMEOUT_MS = 10 * 60 * 1000;
 const QR_GENERATION_MAX_ATTEMPTS = 3;
 const PAYMENT_PAGE_SETTINGS_KEY = "payment_page_settings";
+const NOTIFICATION_SETTINGS_KEY = "notification_settings";
 const PAYMENT_CHANNEL_ALIASES: Record<string, PaymentChannel> = {
   alipay: "alipay",
   ali: "alipay",
@@ -80,6 +88,10 @@ const DEFAULT_PAYMENT_PAGE_SETTINGS: PaymentPageSettings = {
   noticeBody: "",
   noticeLinkText: "",
   noticeLinkUrl: null
+};
+const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
+  feishuEnabled: false,
+  feishuWebhookUrl: null
 };
 
 type RowBool = 0 | 1;
@@ -248,6 +260,7 @@ export interface AppContext {
   db: Database;
   runCallbacks: boolean;
   callbackMaxAttempts: number;
+  feishuFetch: FeishuWebhookFetch;
   orderPaidListeners: OrderPaidListener[];
   androidTaskStreams: Map<string, Set<AndroidTaskStreamClient>>;
 }
@@ -256,11 +269,13 @@ export function createAppContext(options: {
   databaseUrl?: string;
   runCallbacks?: boolean;
   callbackMaxAttempts?: number;
+  feishuFetch?: FeishuWebhookFetch;
 } = {}): AppContext {
   return {
     db: createDatabase(options.databaseUrl),
     runCallbacks: options.runCallbacks ?? Bun.env.NODE_ENV !== "test",
     callbackMaxAttempts: options.callbackMaxAttempts ?? MAX_CALLBACK_ATTEMPTS,
+    feishuFetch: options.feishuFetch ?? fetch,
     orderPaidListeners: [],
     androidTaskStreams: new Map()
   };
@@ -831,6 +846,47 @@ export function updatePaymentPageSettings(ctx: AppContext, input: UpdatePaymentP
   setAppSetting(ctx, PAYMENT_PAGE_SETTINGS_KEY, JSON.stringify(settings));
   logSystem(ctx, "info", "payment_page.settings_updated", "付款页配置已更新", {
     noticeEnabled: settings.noticeEnabled
+  });
+  return settings;
+}
+
+function normalizeNotificationSettingsInput(
+  input: UpdateNotificationSettingsInput = {},
+  fallback: NotificationSettings = DEFAULT_NOTIFICATION_SETTINGS
+): NotificationSettings {
+  const source = { ...fallback, ...input };
+  const feishuEnabled = Boolean(source.feishuEnabled);
+  const feishuWebhookUrl = normalizeOptionalHttpUrl(source.feishuWebhookUrl, "飞书 Webhook 地址");
+
+  if (feishuEnabled && !feishuWebhookUrl) {
+    throw apiError(400, "启用飞书通知时必须填写 Webhook 地址");
+  }
+
+  return {
+    feishuEnabled,
+    feishuWebhookUrl
+  };
+}
+
+export function getNotificationSettings(ctx: AppContext): NotificationSettings {
+  const value = appSetting(ctx, NOTIFICATION_SETTINGS_KEY);
+  if (!value) {
+    return { ...DEFAULT_NOTIFICATION_SETTINGS };
+  }
+
+  try {
+    return normalizeNotificationSettingsInput(JSON.parse(value) as UpdateNotificationSettingsInput);
+  } catch {
+    return { ...DEFAULT_NOTIFICATION_SETTINGS };
+  }
+}
+
+export function updateNotificationSettings(ctx: AppContext, input: UpdateNotificationSettingsInput = {}) {
+  const settings = normalizeNotificationSettingsInput(input, getNotificationSettings(ctx));
+  setAppSetting(ctx, NOTIFICATION_SETTINGS_KEY, JSON.stringify(settings));
+  logSystem(ctx, "info", "notifications.settings_updated", "通知配置已更新", {
+    feishuEnabled: settings.feishuEnabled,
+    feishuConfigured: Boolean(settings.feishuWebhookUrl)
   });
   return settings;
 }
@@ -1939,7 +1995,45 @@ export function createOrder(ctx: AppContext, input: CreateOrderInput) {
     actualAmount: order.actualAmount,
     payMode: order.payMode
   });
+  dispatchFeishuOrderCreatedNotification(ctx, order);
   return order;
+}
+
+export function dispatchFeishuOrderCreatedNotification(ctx: AppContext, order: Order) {
+  const settings = getNotificationSettings(ctx);
+  if (!settings.feishuEnabled || !settings.feishuWebhookUrl) {
+    return null;
+  }
+
+  const notification = sendFeishuOrderCreatedNotification(
+    settings.feishuWebhookUrl,
+    order,
+    ctx.feishuFetch
+  ).then((result) => {
+    if (result.ok) {
+      logSystem(ctx, "info", "feishu.order_created.success", "飞书新订单通知发送成功", {
+        orderId: order.id,
+        httpStatus: result.httpStatus
+      });
+    } else {
+      logSystem(ctx, "warn", "feishu.order_created.failed", "飞书新订单通知发送失败", {
+        orderId: order.id,
+        httpStatus: result.httpStatus,
+        error: result.error,
+        responseBody: result.responseBody
+      });
+    }
+    return result;
+  }).catch((error) => {
+    logSystem(ctx, "warn", "feishu.order_created.error", "飞书新订单通知请求异常", {
+      orderId: order.id,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  });
+
+  void notification;
+  return notification;
 }
 
 export function getOrder(ctx: AppContext, id: string) {
@@ -2013,7 +2107,7 @@ export function updateOrderStatus(ctx: AppContext, id: string, status: OrderStat
     throw apiError(500, "订单状态更新失败");
   }
   logSystem(ctx, "warn", "orders.status_updated", "订单状态已手动更新", { orderId: id, status });
-  if (status === "paid") {
+  if (status === "paid" && order.status !== "paid" && order.status !== "notified") {
     notifyOrderPaid(ctx, updated);
   }
   return updated;
@@ -2027,6 +2121,7 @@ export function addOrderPaidListener(ctx: AppContext, listener: OrderPaidListene
 
 function notifyOrderPaid(ctx: AppContext, order: Order) {
   queueCallback(ctx, order);
+  dispatchFeishuOrderPaidNotification(ctx, order);
   for (const listener of ctx.orderPaidListeners) {
     try {
       listener(ctx, order);
@@ -2037,6 +2132,43 @@ function notifyOrderPaid(ctx: AppContext, order: Order) {
       });
     }
   }
+}
+
+export function dispatchFeishuOrderPaidNotification(ctx: AppContext, order: Order) {
+  const settings = getNotificationSettings(ctx);
+  if (!settings.feishuEnabled || !settings.feishuWebhookUrl) {
+    return null;
+  }
+
+  const notification = sendFeishuOrderPaidNotification(
+    settings.feishuWebhookUrl,
+    order,
+    ctx.feishuFetch
+  ).then((result) => {
+    if (result.ok) {
+      logSystem(ctx, "info", "feishu.order_paid.success", "飞书订单支付通知发送成功", {
+        orderId: order.id,
+        httpStatus: result.httpStatus
+      });
+    } else {
+      logSystem(ctx, "warn", "feishu.order_paid.failed", "飞书订单支付通知发送失败", {
+        orderId: order.id,
+        httpStatus: result.httpStatus,
+        error: result.error,
+        responseBody: result.responseBody
+      });
+    }
+    return result;
+  }).catch((error) => {
+    logSystem(ctx, "warn", "feishu.order_paid.error", "飞书订单支付通知请求异常", {
+      orderId: order.id,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  });
+
+  void notification;
+  return notification;
 }
 
 export function createDeviceEnrollment(ctx: AppContext, input: CreateDeviceEnrollmentInput): DeviceEnrollment {

@@ -10,6 +10,7 @@ import {
   deletePaymentAccount,
   deletePresetQrGenerationTask,
   enrollAndroidDevice,
+  getNotificationSettings,
   getOrder,
   getPaymentPageSettings,
   getPublicPaymentPage,
@@ -32,6 +33,7 @@ import {
   unbindDevicePaymentAccount,
   updatePaymentAccountSettings,
   updateOrderStatus,
+  updateNotificationSettings,
   updatePaymentPageSettings,
   upsertPresetQrCodes,
   verifyAndroidRequest,
@@ -43,6 +45,7 @@ import { getAdminPath, getAdminSessionState, isSetupRequired, loginAdmin, setupA
 import { extractMoneyByTemplate, parseMoney } from "../server/money";
 import { createApiRoutes } from "../server/routes";
 import { dispatchEasyPayNotification, signEasyPayParams } from "../server/easypay";
+import { sendFeishuOrderCreatedNotification } from "../server/feishu";
 
 let ctx: AppContext;
 let alipayA: PaymentAccount;
@@ -52,7 +55,10 @@ let wechatA: PaymentAccount;
 beforeEach(() => {
   Bun.env.EASYPAY_PID = "20220715225121";
   Bun.env.EASYPAY_KEY = "test-easypay-key";
-  ctx = createAppContext({ databaseUrl: ":memory:", runCallbacks: false });
+  ctx = createAppContext({
+    databaseUrl: ":memory:",
+    runCallbacks: false
+  });
   alipayA = createPaymentAccount(ctx, {
     code: "alipay-a",
     name: "支付宝 A",
@@ -178,6 +184,154 @@ test("allows order creation when monitoring devices are offline", () => {
   });
 
   expect(order.paymentAccountCode).toBe("alipay-a");
+});
+
+test("sends an interactive Feishu card when an order is created", async () => {
+  const webhookUrl = "https://open.feishu.cn/open-apis/bot/v2/hook/test-token";
+  let requestUrl = "";
+  let requestInit: RequestInit | undefined;
+  let markRequested: (() => void) | undefined;
+  const requested = new Promise<void>((resolve) => {
+    markRequested = resolve;
+  });
+  updateNotificationSettings(ctx, {
+    feishuEnabled: true,
+    feishuWebhookUrl: webhookUrl
+  });
+  ctx.feishuFetch = async (input, init) => {
+    requestUrl = String(input);
+    requestInit = init;
+    markRequested?.();
+    return new Response(JSON.stringify({ code: 0, msg: "success" }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+
+  const order = createOrder(ctx, {
+    paymentChannel: "alipay",
+    amount: "10.00",
+    merchantOrderId: "feishu-order",
+    subject: "测试商品",
+    ttlMinutes: 10
+  });
+  await requested;
+  await Promise.resolve();
+
+  expect(requestUrl).toBe(webhookUrl);
+  expect(requestInit?.method).toBe("POST");
+  const payload = JSON.parse(String(requestInit?.body)) as {
+    msg_type: string;
+    card: {
+      header: { title: { content: string } };
+      elements: Array<{ fields?: Array<{ text: { content: string } }> }>;
+    };
+  };
+  const fieldText = payload.card.elements
+    .flatMap((element) => element.fields ?? [])
+    .map((item) => item.text.content)
+    .join("\n");
+
+  expect(payload.msg_type).toBe("interactive");
+  expect(payload.card.header.title.content).toContain(order.actualAmount);
+  expect(fieldText).toContain(order.id.replaceAll("_", "\\_"));
+  expect(fieldText).toContain("feishu-order");
+  expect(fieldText).toContain("测试商品");
+});
+
+test("treats a non-zero Feishu business code as a failed notification", async () => {
+  const order = createOrder(ctx, {
+    paymentChannel: "wechat",
+    amount: "8.00",
+    merchantOrderId: "feishu-error"
+  });
+  const result = await sendFeishuOrderCreatedNotification(
+    "https://open.feishu.cn/open-apis/bot/v2/hook/test-token",
+    order,
+    async () => new Response(JSON.stringify({ code: 19001, msg: "invalid webhook" }), {
+      status: 200
+    })
+  );
+
+  expect(result.ok).toBe(false);
+  expect(result.error).toBe("invalid webhook");
+});
+
+test("sends a Feishu card once when an order becomes paid", async () => {
+  const order = createOrder(ctx, {
+    paymentChannel: "wechat",
+    amount: "9.00",
+    merchantOrderId: "feishu-paid",
+    subject: "已支付商品"
+  });
+  const requests: RequestInit[] = [];
+  let markRequested: (() => void) | undefined;
+  const requested = new Promise<void>((resolve) => {
+    markRequested = resolve;
+  });
+  updateNotificationSettings(ctx, {
+    feishuEnabled: true,
+    feishuWebhookUrl: "https://open.feishu.cn/open-apis/bot/v2/hook/test-token"
+  });
+  ctx.feishuFetch = async (_input, init) => {
+    requests.push(init ?? {});
+    markRequested?.();
+    return new Response(JSON.stringify({ code: 0, msg: "success" }), {
+      status: 200
+    });
+  };
+
+  const paidOrder = updateOrderStatus(ctx, order.id, "paid");
+  await requested;
+  await Promise.resolve();
+  updateOrderStatus(ctx, order.id, "paid");
+
+  expect(requests).toHaveLength(1);
+  const payload = JSON.parse(String(requests[0]?.body)) as {
+    msg_type: string;
+    card: {
+      header: { template: string; title: { content: string } };
+      elements: Array<{ fields?: Array<{ text: { content: string } }> }>;
+    };
+  };
+  const fieldText = payload.card.elements
+    .flatMap((element) => element.fields ?? [])
+    .map((item) => item.text.content)
+    .join("\n");
+
+  expect(payload.msg_type).toBe("interactive");
+  expect(payload.card.header.template).toBe("green");
+  expect(payload.card.header.title.content).toContain("订单已支付");
+  expect(payload.card.header.title.content).toContain(paidOrder.actualAmount);
+  expect(fieldText).toContain("feishu-paid");
+  expect(paidOrder.paidAt).not.toBeNull();
+  expect(fieldText).toContain(paidOrder.paidAt ?? "");
+});
+
+test("persists Feishu notification settings and validates enabled configuration", () => {
+  expect(getNotificationSettings(ctx)).toEqual({
+    feishuEnabled: false,
+    feishuWebhookUrl: null
+  });
+
+  const settings = updateNotificationSettings(ctx, {
+    feishuEnabled: true,
+    feishuWebhookUrl: "https://open.feishu.cn/open-apis/bot/v2/hook/configured-token"
+  });
+
+  expect(settings).toEqual({
+    feishuEnabled: true,
+    feishuWebhookUrl: "https://open.feishu.cn/open-apis/bot/v2/hook/configured-token"
+  });
+  expect(getNotificationSettings(ctx)).toEqual(settings);
+  expect(() => updateNotificationSettings(ctx, {
+    feishuEnabled: true,
+    feishuWebhookUrl: null
+  })).toThrow("Webhook");
+  expect(() => updateNotificationSettings(ctx, {
+    feishuEnabled: true,
+    feishuWebhookUrl: "javascript:alert(1)"
+  })).toThrow("http/https");
 });
 
 test("requires callback secret when callback url is provided", () => {

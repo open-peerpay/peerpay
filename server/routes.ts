@@ -10,6 +10,7 @@ import {
   deletePresetQrGenerationTask,
   dispatchCallback,
   enrollAndroidDevice,
+  getNotificationSettings,
   getPaymentPageSettings,
   getOrder,
   getPublicPaymentPage,
@@ -33,6 +34,7 @@ import {
   touchDevice,
   unbindDevicePaymentAccount,
   updateOrderStatus,
+  updateNotificationSettings,
   updatePaymentAccountSettings,
   updatePaymentPageSettings,
   upsertPresetQrCodes,
@@ -262,6 +264,10 @@ export function createApiRoutes(ctx: AppContext) {
     "/api/settings/payment-page": {
       GET: (req: Request) => withErrors(() => admin(ctx, req, () => json(getPaymentPageSettings(ctx)))),
       POST: (req: Request) => withErrors(async () => admin(ctx, req, async () => json(updatePaymentPageSettings(ctx, await readJson(req)))))
+    },
+    "/api/settings/notifications": {
+      GET: (req: Request) => withErrors(() => admin(ctx, req, () => json(getNotificationSettings(ctx)))),
+      POST: (req: Request) => withErrors(async () => admin(ctx, req, async () => json(updateNotificationSettings(ctx, await readJson(req)))))
     },
     "/api/payment-accounts": {
       GET: (req: Request) => withErrors(() => admin(ctx, req, () => json(listPaymentAccounts(ctx)))),
